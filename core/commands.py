@@ -1020,7 +1020,7 @@ class DiaryManageCommand(BaseCommand):
                 
 
                 if not self.get_config("diary_generation.enable_syle_send", False):
-                    await self.send_text("我正在写 {date} 的日记...")
+                    await self.send_text(f"我正在写 {date} 的日记...")
                 else:
                     await self.send_text("等下")
                     await style_send(self.message.chat_stream, f"我正在写 {date} 的日记...", self.send_text)
