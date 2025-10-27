@@ -17,7 +17,6 @@ Author: MaiBot Team
 Version: 2.1.0
 """
 
-import asyncio
 import datetime
 import time
 import re
@@ -29,7 +28,7 @@ from src.plugin_system.apis import config_api, message_api, get_logger
 
 from .storage import DiaryStorage
 from .diary_service import DiaryService
-from .utils import ChatIdResolver, DiaryConstants, MockChatStream, format_date_str, get_bot_personality, style_send
+from .utils import ChatIdResolver, DiaryConstants, format_date_str, get_bot_personality, style_send
 
 logger = get_logger("diary_commands")
 
@@ -135,8 +134,7 @@ class DiaryManageCommand(BaseCommand):
 
     async def _show_main_help(self):
         """显示主帮助信息 - 简洁概览"""
-        is_admin = str(self.message.message_info.user_info.user_id) in [str(admin_id) for admin_id in self.get_config("plugin.admin_qqs", [])]
-        
+        # 权限提示在各子命令分支中单独处理
         help_text = """📖 日记插件帮助
 
 👥 所有用户可用：
@@ -433,20 +431,20 @@ class DiaryManageCommand(BaseCommand):
                         context_desc = f"【本群】({group_id}→未找到)"
                         # 增强错误处理和诊断信息
                         logger.error(f"[DEBUG] stream_id查询失败: 群号 {group_id} 在数据库中未找到对应的聊天记录")
-                        logger.error(f"[DEBUG] 可能的原因:")
-                        logger.error(f"[DEBUG] 1. 该群聊尚未有任何消息记录")
-                        logger.error(f"[DEBUG] 2. 群号配置错误或群聊已解散")
-                        logger.error(f"[DEBUG] 3. 数据库中ChatStreams表缺少该群的记录")
+                        logger.error("[DEBUG] 可能的原因:")
+                        logger.error("[DEBUG] 1. 该群聊尚未有任何消息记录")
+                        logger.error("[DEBUG] 2. 群号配置错误或群聊已解散")
+                        logger.error("[DEBUG] 3. 数据库中ChatStreams表缺少该群的记录")
                         logger.error(f"[DEBUG] 4. 群号格式问题: 当前群号='{group_id}' (类型: {type(group_id).__name__})")
-                        logger.error(f"[DEBUG] 建议解决方案:")
+                        logger.error("[DEBUG] 建议解决方案:")
                         logger.error(f"[DEBUG] - 检查群号是否正确: {group_id}")
-                        logger.error(f"[DEBUG] - 确认Bot已加入该群并有消息交互")
+                        logger.error("[DEBUG] - 确认Bot已加入该群并有消息交互")
                         logger.error(f"[DEBUG] - 检查数据库ChatStreams表中是否存在group_id='{group_id}'的记录")
                         
                 except Exception as group_error:
                     logger.error(f"[DEBUG] 群聊处理失败: {group_error}")
                     messages = []
-                    context_desc = f"【本群】(处理失败)"
+                    context_desc = "【本群】(处理失败)"
             else:
                 error_context = "全局消息获取阶段"
                 # 私聊环境：处理所有消息（包含图片）
@@ -476,7 +474,7 @@ class DiaryManageCommand(BaseCommand):
             
         except ValueError as ve:
             logger.error(f"[DEBUG] 参数验证失败 ({error_context}): {ve}")
-            return [], f"【参数错误】"
+            return [], "【参数错误】"
         except Exception as e:
             logger.error(f"[DEBUG] 消息获取失败 ({error_context}): {e}")
             logger.error(f"[DEBUG] 错误详情: 日期={date}, 阶段={error_context}")
@@ -690,7 +688,7 @@ class DiaryManageCommand(BaseCommand):
                 'bot_messages': 0,
                 'user_messages': 0,
                 'active_chats': 0,
-                'context_desc': f'【参数错误】',
+                'context_desc': '【参数错误】',
                 'valid_messages': 0,
                 'data_quality': 'error',
                 'error_detail': str(ve)
@@ -1020,21 +1018,15 @@ class DiaryManageCommand(BaseCommand):
                 
 
                 if not self.get_config("diary_generation.enable_syle_send", False):
-                    await self.send_text("我正在写 {date} 的日记...")
+                    await self.send_text(f"我正在写 {date} 的日记...")
                 else:
                     await self.send_text("等下")
                     await style_send(self.message.chat_stream, f"我正在写 {date} 的日记...", self.send_text)
                 
                 # 直接获取所有消息，忽略黑白名单配置
                 try:
-                    date_obj = datetime.datetime.strptime(date, "%Y-%m-%d")
-                    start_time = date_obj.timestamp()
-                    current_time = datetime.datetime.now()
-                    if current_time.strftime("%Y-%m-%d") == date:
-                        end_time = current_time.timestamp()
-                    else:
-                        end_time = (date_obj + datetime.timedelta(days=1)).timestamp()
-                    
+                    # 验证日期格式（如无效将抛出异常）
+                    datetime.datetime.strptime(date, "%Y-%m-%d")
                     # 根据环境检测获取消息
                     messages, context_desc = await self._get_messages_with_context_detection(date)
                     logger.info(f"generate指令环境检测: {context_desc}, 获取到{len(messages)}条消息")
@@ -1049,9 +1041,9 @@ class DiaryManageCommand(BaseCommand):
                     success, result = await service.generate_diary_from_messages(date, messages, force_50k=True)
                     if success:
                         if not self.get_config("diary_generation.enable_syle_send", False):
-                            await self.send_text("日记生成成功！正在发布到QQ空间\n{date}:\n{result}")
+                            await self.send_text(f"日记生成成功！正在发布到QQ空间\n{date}:\n{result}")
                         else:
-                            await style_send(self.message.chat_stream, f"日记生成成功！正在发布到QQ空间", self.send_text)
+                            await style_send(self.message.chat_stream, "日记生成成功！正在发布到QQ空间", self.send_text)
                             await self.send_text(f"{date}:\n{result}")
                         qzone_success = await service.publish_to_qzone(date, result)
                         if qzone_success:
@@ -1295,12 +1287,12 @@ class DiaryManageCommand(BaseCommand):
                         if date_stats.get('data_quality') == 'error':
                             quality_info = f"\n\n⚠️ 数据质量警告:\n❌ 统计过程出现错误: {date_stats.get('error_detail', '未知错误')}"
                         elif date_stats.get('data_quality') == 'partial':
-                            quality_info = f"\n\n⚠️ 数据质量提醒:\n📊 部分消息数据不完整，统计结果可能不准确"
+                            quality_info = "\n\n⚠️ 数据质量提醒:\n📊 部分消息数据不完整，统计结果可能不准确"
                         elif len(user_stats) == 0 and len(recent_messages) > 0:
-                            quality_info = f"\n\n⚠️ 分析警告:\n📊 用户活跃度分析失败，但历史消息存在"
+                            quality_info = "\n\n⚠️ 分析警告:\n📊 用户活跃度分析失败，但历史消息存在"
                         
                         await self.send_text(debug_text + quality_info)
-                        logger.info(f"[DEBUG] 调试信息发送完成")
+                        logger.info("[DEBUG] 调试信息发送完成")
                         
                     except Exception as build_error:
                         logger.error(f"[DEBUG] 调试信息构建失败: {build_error}")

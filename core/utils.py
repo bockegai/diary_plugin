@@ -15,7 +15,6 @@ import time
 import hashlib
 from typing import List, Tuple, Optional, Any,Dict,Callable
 
-from src.chat.message_receive import message
 from src.chat.message_receive.chat_stream import ChatStream
 from src.plugin_system.apis import get_logger, message_api, config_api,generator_api
 
@@ -234,7 +233,7 @@ class ChatIdResolver:
             cache_data = {
                 "mapping": self.cache,
                 "config_hash": config_hash,
-                "last_update": time.time()
+                "last_update": time.time(),
             }
             with open(self.cache_file, 'w', encoding='utf-8') as f:
                 json.dump(cache_data, f, ensure_ascii=False, indent=2)
@@ -265,7 +264,7 @@ class ChatIdResolver:
         """验证聊天ID是否有效"""
         try:
             # 尝试获取该聊天的消息来验证ID有效性
-            test_messages = message_api.get_messages_by_time_in_chat(
+            message_api.get_messages_by_time_in_chat(
                 chat_id=chat_id,
                 start_time=0,
                 end_time=time.time(),
@@ -294,7 +293,7 @@ class ChatIdResolver:
         """
         # 防止无限递归，最大递归深度限制为1
         if _recursion_depth > 1:
-            logger.error(f"过滤模式解析递归过深，使用默认处理")
+            logger.error("过滤模式解析递归过深，使用默认处理")
             return "PROCESS_ALL", []
         
         # 根据过滤模式处理
