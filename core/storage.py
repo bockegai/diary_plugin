@@ -19,24 +19,19 @@
 版本: 2.1.0
 """
 
-import asyncio
 import datetime
 import time
 import json
 import os
-import re
-import hashlib
-import httpx
-from typing import List, Tuple, Type, Dict, Any, Optional
+from typing import List, Dict, Any, Optional
 
 from src.plugin_system.apis import (
     config_api,
     get_logger,
-    message_api
 )
 
 # 导入共享的工具类
-from .utils import ChatIdResolver, format_date_str
+from .utils import format_date_str
 
 logger = get_logger("diary_plugin.storage")
 
@@ -103,6 +98,7 @@ class DiaryQzoneAPI:
             
             payload = {"domain": domain}
             
+            import httpx
             async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.post(url, json=payload, headers=headers)
                 resp.raise_for_status()
@@ -450,7 +446,7 @@ class DiaryStorage:
                                 success_count += 1
                             else:
                                 failed_count += 1
-                    except:
+                    except Exception:
                         failed_count += 1
                 
                 index_data["success_count"] = success_count

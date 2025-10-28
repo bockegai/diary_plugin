@@ -22,12 +22,10 @@ Author: MaiBot Diary Plugin
 Version: 2.1.0
 """
 
-import asyncio
 import datetime
 import time
 import random
-import re
-from typing import List, Tuple, Dict, Any, Optional
+from typing import List, Tuple, Any
 from openai import AsyncOpenAI
 
 from src.plugin_system import (
@@ -43,7 +41,7 @@ from src.plugin_system.apis import (
 )
 
 from .storage import DiaryStorage, DiaryQzoneAPI
-from .utils import ChatIdResolver, DiaryConstants, get_bot_personality
+from .utils import ChatIdResolver, DiaryConstants
 from .diary_service import DiaryService
 
 logger = get_logger("diary_actions")
@@ -305,7 +303,7 @@ class DiaryGeneratorAction(BaseAction):
         # 创建日记生成器实例
         diary_action = DiaryGeneratorAction(
             action_data={"date": "2025-01-15", "target_chats": []},
-            reasoning="手动生成日记",
+            action_reasoning="手动生成日记",
             cycle_timers={},
             thinking_id="manual_diary",
             chat_stream=chat_stream,
@@ -343,6 +341,22 @@ class DiaryGeneratorAction(BaseAction):
     associated_types = ["text"]
 
     def __init__(self, *args, **kwargs):
+        """
+        初始化日记生成 Action。
+
+        为了兼容旧版本或外部错误调用，这里做了参数兜底处理：
+        - 允许使用 legacy 参数名 "reasoning"，并映射为 BaseAction 所需的
+          "action_reasoning"；
+        - 当调用方未提供 "action_reasoning" 时，自动填充为空字符串，避免
+          BaseAction.__init__ 的必填参数错误。
+        """
+        # 兼容旧代码：将 legacy 的 `reasoning` 映射为 `action_reasoning`
+        if "action_reasoning" not in kwargs:
+            if "reasoning" in kwargs:
+                kwargs["action_reasoning"] = kwargs.pop("reasoning")
+            else:
+                kwargs["action_reasoning"] = ""
+
         super().__init__(*args, **kwargs)
         self.storage = DiaryStorage()
         self.qzone_api = DiaryQzoneAPI()
@@ -463,7 +477,7 @@ class DiaryGeneratorAction(BaseAction):
                         chat_message_counts[chat_id] = []
                     chat_message_counts[chat_id].append(msg)
                 
-                logger.info(f"[过滤调试] 消息按聊天ID分组结果:")
+                logger.info("[过滤调试] 消息按聊天ID分组结果:")
                 for chat_id, messages in chat_message_counts.items():
                     logger.info(f"[过滤调试] 聊天 {chat_id}: {len(messages)}条消息")
                 
@@ -609,7 +623,6 @@ class DiaryGeneratorAction(BaseAction):
         
         timeline_parts = []
         current_hour = -1
-        bot_nickname = config_api.get_global_config("bot.nickname", "麦麦")
         bot_qq_account = str(config_api.get_global_config("bot.qq_account", ""))
         
         # 初始化图片处理器
@@ -851,7 +864,7 @@ class DiaryGeneratorAction(BaseAction):
             current_tokens = self._estimate_tokens(timeline)
             
             if current_tokens > max_tokens:
-                logger.debug(f"默认模型:聊天记录超过50k tokens,进行截断")
+                logger.debug("默认模型:聊天记录超过50k tokens,进行截断")
                 # 重新构建截断后的prompt
                 truncated_timeline = self._truncate_messages(timeline, max_tokens)
                 prompt = prompt.replace(timeline, truncated_timeline)
@@ -966,8 +979,7 @@ class DiaryGeneratorAction(BaseAction):
             >>>     print(f"生成失败: {result}")
         """
         try:
-            # 1. 获取bot人设
-            personality = await get_bot_personality()
+            # 1. 获取bot人设（由服务内部处理，无需在此处获取）
             # 2. 获取当天消息（使用内置API）
             messages = await self.get_daily_messages(date, target_chats)
             
