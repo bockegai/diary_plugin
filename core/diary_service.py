@@ -257,7 +257,6 @@ class DiaryService:
             target_length = random.randint(min_wc, max_wc)
 
             personality_desc = personality["core"]
-            interest_desc = f"\n我的兴趣爱好:{personality['interest']}" if personality.get("interest") else ""
             name = f"\n我的名字是{personality['nickname']}" if personality.get("nickname") else ""
 
             style = self.get_config("diary_generation.style", "diary")
@@ -400,5 +399,4 @@ class DiaryService:
                 diary_data["error_message"] = f"原因:发布异常 - {str(e)}"
                 await self.storage.save_diary(diary_data)
             return False
-
 

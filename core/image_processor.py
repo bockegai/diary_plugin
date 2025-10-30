@@ -121,7 +121,7 @@ class ImageProcessor:
             # 方法2: 检查消息文本内容中的[picid:xxx]格式
             plain_text = getattr(msg, 'processed_plain_text', None) or ""
             if re.search(r'\[picid:[a-f0-9\-]+\]', plain_text):
-                logger.debug(f"通过[picid:xxx]格式检测到图片消息")
+                logger.debug("通过[picid:xxx]格式检测到图片消息")
                 return True
             
             # 方法3: 检查常见的图片标记
