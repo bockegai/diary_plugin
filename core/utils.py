@@ -13,10 +13,11 @@ import os
 import json
 import time
 import hashlib
-from typing import List, Tuple, Optional, Any,Dict,Callable
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from src.chat.message_receive.chat_stream import ChatStream
-from src.plugin_system.apis import get_logger, message_api, config_api,generator_api
+from src.common.data_models.database_data_model import DatabaseMessages
+from src.plugin_system.apis import config_api, generator_api, get_logger, message_api
 
 
 logger = get_logger("diary_plugin.utils")
@@ -162,12 +163,51 @@ class MockChatStream:
         >>> action = SomeAction(chat_stream=mock_stream, ...)
     """
     
-    def __init__(self):
+    def __init__(self, stream_id: str = "diary_scheduled_task", platform: str = "scheduler"):
         """初始化虚拟聊天流"""
-        self.stream_id = "diary_scheduled_task"
-        self.platform = "qq"
+        self.stream_id = stream_id
+        self.platform = platform
         self.group_info = None
         self.user_info = None
+
+
+def create_scheduler_action_message(
+    stream_id: str = "diary_scheduled_task",
+    platform: str = "scheduler",
+    user_id: str = "diary_scheduler",
+    user_nickname: str = "DiaryScheduler",
+) -> DatabaseMessages:
+    """
+    构建用于定时任务的虚拟消息对象
+
+    BaseAction 初始化会访问 action_message.chat_info 与 action_message.user_info。
+    定时任务没有真实消息上下文，通过构建完整的 DatabaseMessages 来满足依赖。
+
+    Args:
+        stream_id: 虚拟聊天流 ID
+        platform: 虚拟平台标识
+        user_id: 虚拟用户 ID
+        user_nickname: 虚拟用户昵称
+
+    Returns:
+        DatabaseMessages: 可用于 Action 初始化的虚拟消息对象
+    """
+    timestamp = time.time()
+    return DatabaseMessages(
+        message_id=stream_id,
+        chat_id=stream_id,
+        time=timestamp,
+        user_id=user_id,
+        user_nickname=user_nickname,
+        user_platform=platform,
+        chat_info_stream_id=stream_id,
+        chat_info_platform=platform,
+        chat_info_create_time=timestamp,
+        chat_info_last_active_time=timestamp,
+        chat_info_user_id=user_id,
+        chat_info_user_nickname=user_nickname,
+        chat_info_user_platform=platform,
+    )
 
 
 class ChatIdResolver:
