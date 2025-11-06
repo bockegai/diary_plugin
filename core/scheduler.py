@@ -27,7 +27,7 @@ from src.plugin_system.apis import (
 )
 
 # 导入共享的工具类
-from .utils import MockChatStream, ChatIdResolver
+from .utils import ChatIdResolver, MockChatStream, create_scheduler_action_message
 from .storage import DiaryStorage
 from .actions import DiaryGeneratorAction
 
@@ -284,16 +284,22 @@ class DiaryScheduler:
         """
         try:
             today = datetime.datetime.now().strftime("%Y-%m-%d")
-            
+            stream_id = "diary_scheduled_task"
+            mock_stream = MockChatStream(stream_id=stream_id)
+            action_message = create_scheduler_action_message(
+                stream_id=stream_id,
+                platform=mock_stream.platform,
+            )
+
             diary_action = DiaryGeneratorAction(
                 action_data={"date": today, "target_chats": [], "is_manual": False},
                 action_reasoning="定时生成日记",
                 cycle_timers={},
                 thinking_id="scheduled_diary",
-                chat_stream=MockChatStream(),
+                chat_stream=mock_stream,
                 log_prefix="[ScheduledDiary]",
                 plugin_config=self.plugin.config,  # 传递完整配置
-                action_message=None
+                action_message=action_message
             )
             
             success, result = await diary_action.generate_diary(today)
