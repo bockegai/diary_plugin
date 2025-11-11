@@ -1003,7 +1003,7 @@ class DiaryManageCommand(BaseCommand):
                         return False, "无权限", True
                     else:
                         # 私聊内:返回无权限提示,阻止后续处理
-                        await style_send("❌ 您没有权限使用此命令。")
+                        await style_send(self.message.chat_stream, "❌ 您没有权限使用此命令。", self.send_text)
                         return False, "无权限", True
 
             if action == "generate":
