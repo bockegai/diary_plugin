@@ -1,20 +1,57 @@
 {
-  "manifest_version": 1,
+  "manifest_version": 2,
+  "version": "3.0.0",
   "name": "日记插件 (Diary Plugin)",
-  "version": "2.1.0",
-  "description": "让麦麦能够回忆和记录每一天的聊天，生成个性化的日记内容(适配0.10.0及以上)",
+  "description": "让麦麦能够回忆和记录每一天的聊天，生成个性化的日记内容(适配新版 MaiBot SDK 2.3+)",
   "author": {
-    "name": "约瑟夫.k",
+    "name": "约瑟夫.k & 晴空",
     "url": "https://github.com/bockegai"
   },
   "license": "MIT",
-  "host_application": {
-    "min_version": "0.10.2"
+  "urls": {
+    "repository": "https://github.com/bockegai/diary_plugin",
+    "homepage": "https://github.com/bockegai/diary_plugin",
+    "issues": "https://github.com/bockegai/diary_plugin/issues"
   },
-  "homepage_url": "https://github.com/bockegai/diary_plugin",
-  "repository_url": "https://github.com/bockegai/diary_plugin",
-  "keywords": ["日记", "记录", "回忆", "QQ空间"],
-  "categories": ["效率工具", "社交"],
-  "default_locale": "zh-CN",
-  "locales_path": "_locales"
+  "host_application": {
+    "min_version": "0.10.2",
+    "max_version": "1.99.99"
+  },
+  "sdk": {
+    "min_version": "2.3.0",
+    "max_version": "2.99.99"
+  },
+  "dependencies": [
+    {
+      "type": "python_package",
+      "name": "httpx",
+      "version_spec": ">=0.24.0"
+    },
+    {
+      "type": "python_package",
+      "name": "pytz",
+      "version_spec": ">=2023.3"
+    },
+    {
+      "type": "python_package",
+      "name": "openai",
+      "version_spec": ">=1.0.0"
+    }
+  ],
+  "capabilities": [
+    "llm.generate",
+    "message.get_by_time",
+    "message.get_by_time_in_chat",
+    "chat.get_stream_by_group_id",
+    "chat.get_stream_by_user_id",
+    "config.get",
+    "send.text"
+  ],
+  "i18n": {
+    "default_locale": "zh-CN",
+    "supported_locales": [
+      "zh-CN"
+    ]
+  },
+  "id": "bockegai.diary-plugin"
 }

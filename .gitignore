@@ -330,3 +330,8 @@ config.toml
 
 interested_rates.txt
 MaiBot.code-workspace
+
+# 重构期间产物,不上传远程
+_legacy/
+tests/
+config.toml.backup.*

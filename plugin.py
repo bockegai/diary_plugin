@@ -1,269 +1,556 @@
-"""
-日记插件主入口文件
+"""diary_plugin 主入口
 
-这是日记插件的主入口文件，负责插件的注册和组件管理。
-所有核心功能已拆分到core模块中，本文件仅包含插件框架相关的代码。
-
-主要功能：
-- 插件注册和配置管理
-- 组件信息提供
-- 定时任务调度器管理
-- 插件状态监控和日志记录
-
-核心模块：
-- core.storage: 数据存储和API集成
-- core.actions: 日记生成核心逻辑
-- core.commands: 命令处理器
-- core.scheduler: 定时任务调度器
-
-Author: MaiBot Team
-Version: 2.1.0
+业务逻辑全部抽到 ``pipelines/`` 子模块,本文件只负责装配 + 派发 + 调度器。
 """
 
 import asyncio
-from typing import List, Tuple, Type
+import contextlib
+import datetime
+import logging
+import re
+from typing import Any, Optional
 
-from src.plugin_system import (
-    BasePlugin,
-    register_plugin,
-    ComponentInfo,
-    ConfigField
+from maibot_sdk import Command, MaiBotPlugin, Tool
+from maibot_sdk.types import ToolParameterInfo, ToolParamType
+
+from .config import DiaryPluginConfig
+from .pipelines import (
+    ChatResolver,
+    DiaryPipeline,
+    DiaryStorage,
+    LLMRunner,
+    MessageFetcher,
+    QzonePublisher,
 )
-from src.plugin_system.apis import (
-    get_logger
-)
+from .pipelines._envelope import peel_envelope
+from .utils.date import format_date_str
 
-# 从core模块导入所有必要的组件
-from .core import (
-    DiaryGeneratorAction,
-    DiaryManageCommand,
-    DiaryScheduler,
-    DiaryStorage
-)
-
-# 导入工具组件
-from .core import EmotionAnalysisTool
-
-logger = get_logger("diary_plugin")
+logger = logging.getLogger(__name__)
 
 
-@register_plugin
-class DiaryPlugin(BasePlugin):
-    """
-    日记插件主类 - 插件系统入口
-    
-    这是日记插件的主要入口类，负责插件的初始化、配置管理和组件注册。
-    所有核心业务逻辑都已拆分到core模块中，本类专注于插件框架相关的功能。
-    
-    主要职责：
-    - 插件注册和配置schema定义
-    - 组件信息提供和管理
-    - 定时任务调度器的生命周期管理
-    - 插件状态监控和日志记录
-    
-    配置结构：
-    - plugin: 插件基础配置
-    - diary_generation: 日记生成相关配置
-    - qzone_publishing: QQ空间发布配置
-    - custom_model: 自定义模型配置
-    - schedule: 定时任务配置
-    
-    组件列表：
-    - DiaryGeneratorAction: 日记生成Action
-    - EmotionAnalysisTool: 情感分析工具
-    - DiaryManageCommand: 日记管理命令
-    
-    特性：
-    - 自动启动定时任务调度器
-    - 智能配置状态检测和日志记录
-    - 完整的错误处理和异常管理
-    - 支持插件热重载和状态恢复
-    """
-    
-    plugin_name = "diary_plugin"
-    enable_plugin = True
-    dependencies = []
-    python_dependencies = ["httpx", "pytz", "openai"]
-    config_file_name = "config.toml"
-    
-    config_section_descriptions = {
-        "plugin": "插件基础配置",
-        "diary_generation": "日记生成相关配置",
-        "qzone_publishing": "QQ空间发布配置",
-        "custom_model": "自定义模型配置（仅支持OpenAI格式）",
-        "schedule": "定时任务配置"
-    }
-    
-    config_schema = {
-        "plugin": {
-            "_section_description": "# diary_plugin - 日记插件配置\n# 让麦麦能够回忆和记录每一天的聊天,生成个性化的日记内容\n\n# 插件基础配置",
-            "enabled": ConfigField(type=bool, default=True, description="是否启用插件"),
-            "config_version": ConfigField(type=str, default="2.2.4", description="配置文件版本"),
-            "admin_qqs": ConfigField(type=list, default=[], description="管理员QQ号列表,用于使用测试命令 (示例:[111,222])"),
-            # 新增：组件级开关
-            "enable_action": ConfigField(type=bool, default=False, description="是否注册并启用 DiaryGeneratorAction"),
-            "enable_tool": ConfigField(type=bool, default=False, description="是否注册并启用 EmotionAnalysisTool"),
-            "enable_command": ConfigField(type=bool, default=True, description="是否注册并启用 DiaryManageCommand")
-        },
-        "diary_generation": {
-            "_section_description": "\n# 日记生成相关配置",
-            "min_message_count": ConfigField(type=int, default=3, description="生成日记所需的最少消息总数"),
-            "min_messages_per_chat": ConfigField(type=int, default=3, description="单个群组聊天条数少于此值时该群组消息不参与日记生成"),
-            "style": ConfigField(type=str, default="diary", description="生成样式: diary | qqzone | custom"),
-            "custom_prompt": ConfigField(
-                type=str,
-                default="",
-                description="当 style=custom 时使用的模板。可用占位符: {date},{timeline},{date_with_weather},{target_length},{personality_desc},{style},{name}"
-            ),
-            "enable_syle_send": ConfigField(type=bool, default=False, description="是否开启回复改写")
-        },
-        "qzone_publishing": {
-            "_section_description": "\n# QQ空间发布配置",
-            "qzone_min_word_count": ConfigField(type=int, default=150, description="最小字数，范围20-8000"),
-            "qzone_max_word_count": ConfigField(type=int, default=350, description="最大字数，范围20-8000，必须≥最小值"),
-            "napcat_host": ConfigField(type=str, default="127.0.0.1", description="Napcat服务地址,Docker环境可使用'napcat'"),
-            "napcat_port": ConfigField(type=str, default="9998", description="Napcat服务端口"),
-            "napcat_token": ConfigField(type=str, default="", description="Napcat服务认证Token,在Napcat WebUI的网络配置中设置,为空则不使用token")
-        },
-        "custom_model": {
-            "_section_description": "\n# 自定义模型配置",
-            "use_custom_model": ConfigField(type=bool, default=False, description="自定义模型（不启用则默认使用系统首要回复模型）"),
-            "api_url": ConfigField(type=str, default="http://rinkoai.com/v1", description="仅支持OpenAI API格式的模型服务,不支持Google Gemini、Anthropic Claude等原生格式\n# 推荐使用的站点: http://rinkoai.com/pricing\n# 咨询答疑群: 1054544611"),
-            "api_key": ConfigField(type=str, default="your-rinko-key-here", description="API密钥"),
-            "model_name": ConfigField(type=str, default="Pro/deepseek-ai/DeepSeek-V3", description="模型名称"),
-            "temperature": ConfigField(type=float, default=0.7, description="生成温度"),
-            "api_timeout": ConfigField(type=int, default=300, description="API调用超时时间（秒），大量聊天记录时建议设置更长时间"),
-            "max_context_tokens": ConfigField(type=int, default=256, description="模型上下文长度（单位：k）,填写模型的真实上限")
-        },
-        "schedule": {
-            "_section_description": "\n# 定时任务配置",
-            "schedule_time": ConfigField(type=str, default="23:30", description="每日生成日记的时间 (HH:MM格式)"),
-            "timezone": ConfigField(type=str, default="Asia/Shanghai", description="时区设置"),
-            "filter_mode": ConfigField(type=str, default="whitelist", description="过滤模式，可选值：whitelist(白名单), blacklist(黑名单)"),
-            "target_chats": ConfigField(type=list, default=[], description="目标列表，格式：[\"group:群号\", \"private:用户qq号\"]\n# 示例：[\"group:123456789\", \"private:987654321\"]\n# 白名单模式：空列表=禁用定时任务，有内容=只处理列表中的聊天\n# 黑名单模式：空列表=处理全部聊天，有内容=处理除列表外的聊天")
-        }
-    }
-    
-    def __init__(self, plugin_dir: str, **kwargs):
-        """
-        初始化日记插件
-        
-        Args:
-            plugin_dir (str): 插件目录路径
-            **kwargs: 其他插件初始化参数
-        """
-        super().__init__(plugin_dir, **kwargs)
-        self.scheduler = None
-        self.logger = get_logger("DiaryPlugin")
-        self.storage = DiaryStorage()
-        
-        # 显示插件配置状态
-        self._log_plugin_status()
-        
-        # 启动定时任务
-        self.scheduler = DiaryScheduler(self)
-        asyncio.create_task(self._start_scheduler_after_delay())
-    
-    def _log_plugin_status(self):
-        """
-        显示插件配置状态（info级别）
-        
-        读取并显示插件的关键配置信息，包括管理员配置、过滤模式、
-        定时任务状态和模型配置等。用于插件启动时的状态检查。
-        """
+class DiaryPlugin(MaiBotPlugin):
+    """日记插件主类。"""
+
+    config_model = DiaryPluginConfig
+
+    _scheduler_task: Optional[asyncio.Task]
+    _pipeline: Optional[DiaryPipeline]
+    _storage: Optional[DiaryStorage]
+    _chat_resolver: Optional[ChatResolver]
+    _message_fetcher: Optional[MessageFetcher]
+    _llm_runner: Optional[LLMRunner]
+    _qzone_publisher: Optional[QzonePublisher]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._scheduler_task = None
+        self._pipeline = None
+        self._storage = None
+        self._chat_resolver = None
+        self._message_fetcher = None
+        self._llm_runner = None
+        self._qzone_publisher = None
+
+    # ===== 生命周期 =====
+
+    async def on_load(self) -> None:
+        cfg = self.config
+        self.ctx.logger.info(
+            "diary_plugin v%s 已加载 (style=%s, schedule_time=%s, filter_mode=%s, "
+            "use_custom_model=%s, default_model=%s)",
+            cfg.plugin.version,
+            cfg.diary_generation.style,
+            cfg.schedule.schedule_time,
+            cfg.schedule.filter_mode,
+            cfg.custom_model.use_custom_model,
+            cfg.default_model.model_name,
+        )
+        await self._build_pipeline()
+        if self._should_run_scheduler():
+            self._scheduler_task = asyncio.create_task(self._schedule_loop())
+            self.ctx.logger.info(
+                "定时任务已启动:每日 %s (%s)",
+                cfg.schedule.schedule_time,
+                cfg.schedule.timezone,
+            )
+        else:
+            self.ctx.logger.info("定时任务未启动(filter_mode=%s,target_chats 为空)", cfg.schedule.filter_mode)
+
+    async def on_unload(self) -> None:
+        if self._scheduler_task and not self._scheduler_task.done():
+            self._scheduler_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._scheduler_task
+        self.ctx.logger.info("diary_plugin 已卸载")
+
+    async def on_config_update(
+        self,
+        scope: str,
+        config_data: dict,
+        version: str,
+    ) -> None:
+        del config_data
+        self.ctx.logger.info("配置更新: scope=%s version=%s,重建 pipeline", scope, version)
+        await self._build_pipeline()
+
+    async def _build_pipeline(self) -> None:
+        """装配 pipelines。"""
         try:
-            # 读取基本配置
-            admin_qqs = [str(admin_id) for admin_id in self.get_config("plugin.admin_qqs", [])]
-            filter_mode = self.get_config("schedule.filter_mode", "whitelist")
-            target_chats = self.get_config("schedule.target_chats", [])
-            use_custom_model = self.get_config("custom_model.use_custom_model", False)
-            
-            # 显示管理员配置
-            if admin_qqs:
-                self.logger.info(f"管理员已配置: {len(admin_qqs)}个")
-            else:
-                self.logger.info("管理员未配置,所有用户无权限使用命令")
-            
-            # 显示过滤模式和定时任务状态
-            if filter_mode == "whitelist":
-                if target_chats:
-                    self.logger.info(f"白名单模式: 已配置{len(target_chats)}个目标聊天,定时任务将启动")
-                else:
-                    self.logger.info("白名单模式: 目标列表未配置,定时任务已禁用")
-            elif filter_mode == "blacklist":
-                if target_chats:
-                    self.logger.info(f"黑名单模式: 排除{len(target_chats)}个聊天,定时任务将启动")
-                else:
-                    self.logger.info("黑名单模式: 无排除列表,处理全部聊天,定时任务将启动")
-            
-            # 显示Napcat token配置状态
-            napcat_token = self.get_config("qzone_publishing.napcat_token", "")
-            if napcat_token:
-                self.logger.info("Napcat Token已配置,QQ空间发布功能启用安全验证")
-            else:
-                self.logger.info("Napcat Token未配置,将使用无Token模式连接")
-            
-            # 显示模型配置
-            if use_custom_model:
-                model_name = self.get_config("custom_model.model_name", "未知模型")
-                api_key = self.get_config("custom_model.api_key", "")
-                if api_key and api_key != "your-rinko-key-here":
-                    self.logger.info(f"自定义模型已启用: {model_name}")
-                else:
-                    self.logger.info("自定义模型已启用但API密钥未配置,将使用默认模型")
-            else:
-                self.logger.info("使用系统默认模型")
-                
-        except Exception as e:
-            self.logger.error(f"读取插件配置失败: {e}")
-    
-    async def _start_scheduler_after_delay(self):
-        """
-        延迟启动定时任务调度器
-        
-        在插件初始化完成后，延迟10秒再启动定时任务，确保插件完全初始化
-        后再开始定时任务，避免初始化过程中的竞争条件。
-        
-        该方法通过asyncio.create_task在插件初始化时调用，是定时任务启动的
-        标准流程。
-        
-        Note:
-            延迟10秒是为了确保所有插件组件都已正确初始化，特别是数据库
-            连接和消息API等依赖服务已就绪。
-        """
-        await asyncio.sleep(10)
-        if self.scheduler:
-            await self.scheduler.start()
+            uin = await self._resolve_bot_qq_int()
+            self._storage = DiaryStorage()
+            self._chat_resolver = ChatResolver(self.ctx)
+            self._message_fetcher = MessageFetcher(self.ctx, self._chat_resolver)
+            self._llm_runner = LLMRunner(self.ctx, self.config.default_model)
+            self._qzone_publisher = QzonePublisher(uin=uin) if uin > 0 else None
+            self._pipeline = DiaryPipeline(
+                ctx=self.ctx,
+                config=self.config,
+                storage=self._storage,
+                message_fetcher=self._message_fetcher,
+                llm_runner=self._llm_runner,
+                qzone_publisher=self._qzone_publisher,
+            )
+            self.ctx.logger.info(
+                "pipeline 装配完成 (uin=%s, qzone=%s)",
+                uin if uin else "未配置",
+                "可用" if self._qzone_publisher else "禁用",
+            )
+        except Exception as exc:
+            self.ctx.logger.error("装配 pipeline 失败: %s", exc, exc_info=True)
+            self._pipeline = None
 
-    def get_plugin_components(self) -> List[Tuple[ComponentInfo, Type]]:
-        """
-        返回插件包含的组件列表
-        
-        提供插件系统需要的组件信息，包括Action、Tool和Command组件。
-        这些组件将被插件系统自动注册和管理。
-        
-        Returns:
-            List[Tuple[ComponentInfo, Type]]: 组件信息和类型的元组列表
-                - DiaryGeneratorAction: 日记生成Action组件
-                - EmotionAnalysisTool: 情感分析工具组件
-                - DiaryManageCommand: 日记管理命令组件
-        
-        Note:
-            所有组件都已在core模块中实现，本方法仅负责向插件系统注册
-        """
-        components: List[Tuple[ComponentInfo, Type]] = []
+    async def _resolve_bot_qq_int(self) -> int:
         try:
-            enable_action = self.get_config("plugin.enable_action", True)
-            enable_tool = self.get_config("plugin.enable_tool", True)
-            enable_command = self.get_config("plugin.enable_command", True)
+            value = await self.ctx.config.get("bot.qq_account", 0)
+        except Exception as exc:
+            logger.warning("ctx.config.get(bot.qq_account) 失败: %s", exc)
+            return 0
+        value = peel_envelope(value)
+        if isinstance(value, dict):
+            value = value.get("value", 0)
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def _ensure_pipeline_ready(self) -> bool:
+        return self._pipeline is not None
+
+    # ===== 调度器 =====
+
+    def _should_run_scheduler(self) -> bool:
+        cfg = self.config.schedule
+        if cfg.filter_mode == "whitelist" and not cfg.target_chats:
+            return False
+        return True
+
+    def _get_now(self) -> datetime.datetime:
+        try:
+            import pytz
+            tz = pytz.timezone(self.config.schedule.timezone)
+            return datetime.datetime.now(tz)
         except Exception:
-            enable_action = enable_tool = enable_command = True
+            return datetime.datetime.now()
 
-        if enable_action:
-            components.append((DiaryGeneratorAction.get_action_info(), DiaryGeneratorAction))
-        if enable_tool:
-            components.append((EmotionAnalysisTool.get_tool_info(), EmotionAnalysisTool))
-        if enable_command:
-            components.append((DiaryManageCommand.get_command_info(), DiaryManageCommand))
+    def _next_run_seconds(self) -> float:
+        now = self._get_now()
+        try:
+            hour, minute = map(int, self.config.schedule.schedule_time.split(":"))
+        except (ValueError, AttributeError):
+            hour, minute = 23, 30
+        next_run = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if now >= next_run:
+            next_run = next_run + datetime.timedelta(days=1)
+        return (next_run - now).total_seconds()
 
-        return components
+    async def _schedule_loop(self) -> None:
+        while True:
+            try:
+                wait = self._next_run_seconds()
+                self.ctx.logger.info("下次定时日记: +%ds", int(wait))
+                await asyncio.sleep(wait)
+                if not self._ensure_pipeline_ready():
+                    self.ctx.logger.warning("pipeline 未就绪,跳过此次执行")
+                    await asyncio.sleep(60)
+                    continue
+                await self._pipeline.generate_and_publish_for_today()
+            except asyncio.CancelledError:
+                self.ctx.logger.info("调度器收到取消信号")
+                break
+            except Exception as exc:
+                self.ctx.logger.error("调度器异常: %s", exc, exc_info=True)
+                await asyncio.sleep(60)
+
+    # ===== @Tool emotion_analysis =====
+
+    @Tool(
+        "emotion_analysis",
+        description="分析聊天记录的情感色彩,识别开心、无语、吐槽、感动等情绪",
+        parameters=[
+            ToolParameterInfo(
+                name="messages",
+                param_type=ToolParamType.STRING,
+                description="聊天记录文本",
+                required=True,
+            ),
+            ToolParameterInfo(
+                name="analysis_type",
+                param_type=ToolParamType.STRING,
+                description="分析类型: emotion(情感) 或 topic(主题)",
+                required=False,
+            ),
+        ],
+    )
+    async def handle_emotion_analysis(
+        self,
+        messages: str = "",
+        analysis_type: str = "emotion",
+        **kwargs: Any,
+    ) -> dict:
+        del kwargs
+        if not self.config.plugin.enable_tool:
+            return {"name": "emotion_analysis", "content": "情感分析 Tool 已禁用"}
+        text = (messages or "").strip()
+        if not text:
+            return {"name": "emotion_analysis", "content": "没有消息内容可分析"}
+
+        if analysis_type == "emotion":
+            emotions = []
+            if any(w in text for w in ["哈哈", "笑", "开心", "高兴"]):
+                emotions.append("开心")
+            if any(w in text for w in ["无语", "醉了", "服了"]):
+                emotions.append("无语")
+            if any(w in text for w in ["吐槽", "抱怨", "烦"]):
+                emotions.append("吐槽")
+            if any(w in text for w in ["感动", "温暖", "暖心"]):
+                emotions.append("感动")
+            content = f"检测到的情感: {'、'.join(emotions) if emotions else '平静'}"
+        else:
+            content = "聊天主题: 日常对话"
+        return {"name": "emotion_analysis", "content": content}
+
+    # ===== @Command /diary =====
+
+    @Command(
+        "diary",
+        description="日记管理命令(/diary generate|list|view|debug|help)",
+        pattern=r"^\s*/\s*diary\s+(?P<action>list|generate|help|debug|view)(?:\s+(?P<param>.+))?\s*$",
+    )
+    async def handle_diary(
+        self,
+        **kwargs: Any,
+    ) -> tuple:
+        if not self.config.plugin.enable_command:
+            return False, "diary 命令已禁用", True
+
+        matched = kwargs.get("matched_groups") or {}
+        action = (matched.get("action") or "").strip()
+        param_raw = matched.get("param")
+        param = re.sub(r"\s+", " ", param_raw.strip()) if isinstance(param_raw, str) else ""
+
+        stream_id = str(kwargs.get("stream_id", "") or "")
+        user_id = str(kwargs.get("user_id", "") or "")
+        group_id = str(kwargs.get("group_id", "") or "")
+
+        # 权限检查
+        if action not in ("view", "help"):
+            admins = {str(x) for x in self.config.plugin.admin_qqs}
+            if user_id not in admins:
+                if group_id:
+                    return False, "无权限(群聊静默)", True
+                if stream_id:
+                    await self.ctx.send.text("❌ 您没有权限使用此命令。", stream_id)
+                return False, "无权限", True
+
+        if not self._ensure_pipeline_ready():
+            if stream_id:
+                await self.ctx.send.text("⚠️ 日记插件未就绪", stream_id)
+            return False, "pipeline 未就绪", True
+
+        try:
+            if action == "generate":
+                return await self._cmd_generate(param, stream_id, group_id)
+            if action == "view":
+                return await self._cmd_view(param, stream_id)
+            if action == "list":
+                return await self._cmd_list(param, stream_id)
+            if action == "debug":
+                return await self._cmd_debug(param, stream_id, group_id)
+            if action == "help":
+                return await self._cmd_help(stream_id)
+            return False, f"未知子命令: {action}", True
+        except Exception as exc:
+            self.ctx.logger.error("/diary %s 执行失败: %s", action, exc, exc_info=True)
+            if stream_id:
+                await self.ctx.send.text(f"❌ 命令执行出错: {exc}", stream_id)
+            return False, str(exc), True
+
+    # ===== 子命令实现 =====
+
+    async def _cmd_generate(self, param: str, stream_id: str, group_id: str) -> tuple:
+        try:
+            date = format_date_str(param if param else datetime.datetime.now())
+        except ValueError as exc:
+            if stream_id:
+                await self.ctx.send.text(
+                    f"❌ 日期格式错误: {exc}\n\n💡 支持: 2025-08-24 / 2025/08/24 / 2025.08.24",
+                    stream_id,
+                )
+            return False, "日期格式错误", True
+
+        if stream_id:
+            await self.ctx.send.text(f"我正在写 {date} 的日记...", stream_id)
+
+        # generate 命令忽略黑白名单。如果在群聊中执行,只取该群的消息;否则全局
+        if group_id:
+            try:
+                stream = await self.ctx.chat.get_stream_by_group_id(group_id)
+                stream = peel_envelope(stream)
+                if isinstance(stream, dict):
+                    target_stream = stream.get("stream", stream)
+                    if isinstance(target_stream, dict):
+                        sid = target_stream.get("session_id") or target_stream.get("stream_id")
+                        if sid:
+                            messages = await self._pipeline.fetch_messages_for_date(
+                                date, target_chats=[sid]
+                            )
+                        else:
+                            messages = await self._pipeline.fetch_messages_for_date(date, ignore_filter=True)
+                    else:
+                        messages = await self._pipeline.fetch_messages_for_date(date, ignore_filter=True)
+                else:
+                    messages = await self._pipeline.fetch_messages_for_date(date, ignore_filter=True)
+            except Exception as exc:
+                self.ctx.logger.warning("群聊 chat 查询失败,降级全局: %s", exc)
+                messages = await self._pipeline.fetch_messages_for_date(date, ignore_filter=True)
+        else:
+            messages = await self._pipeline.fetch_messages_for_date(date, ignore_filter=True)
+
+        success, result = await self._pipeline.generate_from_messages(date, messages, force_50k=True)
+        if not success:
+            if stream_id:
+                await self.ctx.send.text(f"❌ 生成失败: {result}", stream_id)
+            return False, result, True
+
+        if stream_id:
+            await self.ctx.send.text(f"日记生成成功！正在发布到 QQ 空间\n{date}:\n{result}", stream_id)
+        publish_ok = await self._pipeline.publish_to_qzone(date, result)
+        if stream_id:
+            if publish_ok:
+                await self.ctx.send.text("已成功发布到 QQ 空间！", stream_id)
+            else:
+                await self.ctx.send.text(
+                    "⚠️ QQ 空间发布失败,可能原因:\n1. Napcat 服务未启动\n2. 端口配置错误\n3. QQ 空间权限问题",
+                    stream_id,
+                )
+        return True, result, True
+
+    async def _cmd_view(self, param: str, stream_id: str) -> tuple:
+        args = param.split() if param else []
+        try:
+            date = format_date_str(args[0] if args else datetime.datetime.now())
+        except ValueError as exc:
+            if stream_id:
+                await self.ctx.send.text(f"❌ 日期格式错误: {exc}", stream_id)
+            return False, "日期格式错误", True
+
+        diaries = await self._storage.get_diaries_by_date(date)
+        if not diaries:
+            if stream_id:
+                await self.ctx.send.text(f"📭 没有找到 {date} 的日记", stream_id)
+            return True, "无日记", True
+
+        diaries.sort(key=lambda d: d.get("generation_time", 0))
+        if len(args) > 1 and args[1].isdigit():
+            idx = int(args[1]) - 1
+            if 0 <= idx < len(diaries):
+                d = diaries[idx]
+                gt = datetime.datetime.fromtimestamp(d.get("generation_time", 0))
+                status = "✅已发布" if d.get("is_published_qzone") else "❌未发布"
+                if stream_id:
+                    await self.ctx.send.text(
+                        f"📖 {date} 日记 {idx+1} ({gt.strftime('%H:%M')}) | "
+                        f"{d.get('word_count', 0)}字 | {status}:\n\n{d.get('diary_content', '')}",
+                        stream_id,
+                    )
+            else:
+                if stream_id:
+                    await self.ctx.send.text("❌ 编号无效", stream_id)
+            return True, "查看完成", True
+
+        lines = []
+        for i, d in enumerate(diaries, 1):
+            gt = datetime.datetime.fromtimestamp(d.get("generation_time", 0))
+            status = "✅已发布" if d.get("is_published_qzone") else "❌未发布"
+            lines.append(f"{i}. {gt.strftime('%H:%M')} | {d.get('word_count', 0)}字 | {status}")
+        if stream_id:
+            await self.ctx.send.text(
+                f"📅 {date} 的日记列表:\n" + "\n".join(lines)
+                + "\n\n输入 /diary view {日期} {编号} 查看具体内容",
+                stream_id,
+            )
+        return True, "列表完成", True
+
+    async def _cmd_list(self, param: str, stream_id: str) -> tuple:
+        if param == "all":
+            stats = await self._storage.get_stats()
+            diaries = await self._storage.list_diaries(limit=0)
+            if not diaries:
+                if stream_id:
+                    await self.ctx.send.text("📭 还没有任何日记记录", stream_id)
+                return True, "空", True
+            success_count = sum(1 for d in diaries if d.get("is_published_qzone"))
+            failed_count = len(diaries) - success_count
+            success_rate = success_count / len(diaries) * 100 if diaries else 0
+            dates = sorted({d.get("date", "") for d in diaries if d.get("date")})
+            date_range = f"{dates[0]} ~ {dates[-1]}" if len(dates) > 1 else (dates[0] if dates else "无")
+            if stream_id:
+                await self.ctx.send.text(
+                    f"📚 日记详细统计:\n📖 总日记数: {stats['total_count']}篇\n"
+                    f"📝 总字数: {stats['total_words']}字 (平均 {stats['avg_words']}字/篇)\n"
+                    f"📅 日期范围: {date_range}\n"
+                    f"📱 发布: {success_count} 成功 / {failed_count} 失败 ({success_rate:.1f}%)",
+                    stream_id,
+                )
+            return True, "统计完成", True
+
+        if param and re.match(r"\d{4}-\d{1,2}-\d{1,2}", param):
+            try:
+                date = format_date_str(param)
+            except ValueError as exc:
+                if stream_id:
+                    await self.ctx.send.text(f"❌ 日期格式错误: {exc}", stream_id)
+                return False, "日期格式错误", True
+            diaries = await self._storage.get_diaries_by_date(date)
+            if not diaries:
+                if stream_id:
+                    await self.ctx.send.text(f"📭 没有找到 {date} 的日记", stream_id)
+                return True, "空", True
+            total_words = sum(d.get("word_count", 0) for d in diaries)
+            success_count = sum(1 for d in diaries if d.get("is_published_qzone"))
+            lines = []
+            for i, d in enumerate(diaries, 1):
+                gt = datetime.datetime.fromtimestamp(d.get("generation_time", 0))
+                status = "✅已发布" if d.get("is_published_qzone") else "❌未发布"
+                lines.append(f"{i}. {gt.strftime('%H:%M')} ({d.get('word_count', 0)}字) {status}")
+            if stream_id:
+                await self.ctx.send.text(
+                    f"📅 {date} 日记概况:\n📝 共{len(diaries)}篇,总字数 {total_words}\n"
+                    f"📱 已发布 {success_count}/{len(diaries)}\n\n"
+                    + "\n".join(lines),
+                    stream_id,
+                )
+            return True, "完成", True
+
+        # 默认: 概览 + 最近10篇
+        stats = await self._storage.get_stats()
+        recent = await self._storage.list_diaries(limit=10)
+        if not recent:
+            if stream_id:
+                await self.ctx.send.text("📭 还没有任何日记记录", stream_id)
+            return True, "空", True
+        lines = []
+        for d in recent:
+            status = "✅已发布" if d.get("is_published_qzone") else "❌未发布"
+            lines.append(f"📅 {d.get('date', '')} ({d.get('word_count', 0)}字) {status}")
+        if stream_id:
+            await self.ctx.send.text(
+                f"📚 日记概览:\n📖 总日记数: {stats['total_count']}篇\n"
+                f"📝 总字数: {stats['total_words']}字 (平均 {stats['avg_words']}字/篇)\n"
+                f"📅 最新日记: {stats['latest_date']}\n\n📋 最近 10 篇:\n"
+                + "\n".join(lines)
+                + "\n\n💡 /diary list [日期] 查看指定日期 / /diary list all 查看详细",
+                stream_id,
+            )
+        return True, "概览完成", True
+
+    async def _cmd_debug(self, param: str, stream_id: str, group_id: str) -> tuple:
+        try:
+            date = format_date_str(param if param else datetime.datetime.now())
+        except ValueError as exc:
+            if stream_id:
+                await self.ctx.send.text(f"❌ 日期格式错误: {exc}", stream_id)
+            return False, "日期格式错误", True
+
+        bot_qq = await self._resolve_bot_qq_int()
+        bot_qq_str = str(bot_qq) if bot_qq else "未配置"
+        try:
+            nickname_raw = await self.ctx.config.get("bot.nickname", "麦麦")
+            nickname_raw = peel_envelope(nickname_raw)
+            if isinstance(nickname_raw, dict):
+                nickname_raw = nickname_raw.get("value", "麦麦")
+            bot_nickname = str(nickname_raw or "麦麦")
+        except Exception:
+            bot_nickname = "麦麦"
+
+        # 取当日消息(忽略黑白名单,如果在群聊则限定该群)
+        try:
+            if group_id:
+                stream = await self.ctx.chat.get_stream_by_group_id(group_id)
+                stream = peel_envelope(stream)
+                target_stream = stream.get("stream", stream) if isinstance(stream, dict) else None
+                if isinstance(target_stream, dict):
+                    sid = target_stream.get("session_id") or target_stream.get("stream_id")
+                else:
+                    sid = None
+                if sid:
+                    messages = await self._pipeline.fetch_messages_for_date(date, target_chats=[sid], ignore_min_messages_per_chat=True)
+                    context_desc = f"【本群】({group_id} → {sid})"
+                else:
+                    messages = []
+                    context_desc = f"【本群】({group_id} → 未找到)"
+            else:
+                messages = await self._pipeline.fetch_messages_for_date(date, ignore_filter=True, ignore_min_messages_per_chat=True)
+                context_desc = "【全局日记】"
+        except Exception as exc:
+            self.ctx.logger.error("debug 取消息失败: %s", exc, exc_info=True)
+            messages = []
+            context_desc = "【取消息失败】"
+
+        bot_msgs = 0
+        user_msgs = 0
+        chat_ids = set()
+        for m in messages:
+            info = (m.get("message_info") or {}).get("user_info") or {}
+            uid = str(info.get("user_id", "") or "")
+            if uid == bot_qq_str:
+                bot_msgs += 1
+            else:
+                user_msgs += 1
+            sid = m.get("session_id")
+            if sid:
+                chat_ids.add(sid)
+
+        debug_text = (
+            f"🔍 Bot 消息读取调试 ({date}):\n\n"
+            f"🤖 Bot 信息:\n- QQ 号: {bot_qq_str}\n- 昵称: {bot_nickname}\n\n"
+            f"📅 {date} 消息统计 {context_desc}:\n"
+            f"- 活跃聊天: {len(chat_ids)} 个\n"
+            f"- 用户消息: {user_msgs} 条\n"
+            f"- Bot 消息: {bot_msgs} 条\n"
+            f"- 总计: {len(messages)} 条"
+        )
+        if stream_id:
+            await self.ctx.send.text(debug_text, stream_id)
+        return True, "调试完成", True
+
+    async def _cmd_help(self, stream_id: str) -> tuple:
+        text = (
+            "📖 日记插件帮助\n\n"
+            "👥 所有用户可用:\n"
+            "/diary help - 显示帮助\n"
+            "/diary view [日期] [编号] - 查看日记\n\n"
+            "🔒 管理员专用:\n"
+            "/diary generate [日期] - 生成日记\n"
+            "/diary list [日期|all] - 日记列表/统计\n"
+            "/diary debug [日期] - 调试信息\n\n"
+            "📅 日期格式: YYYY-MM-DD / YYYY/MM/DD / YYYY.MM.DD"
+        )
+        if stream_id:
+            await self.ctx.send.text(text, stream_id)
+        return True, "帮助完成", True
+
+
+def create_plugin() -> DiaryPlugin:
+    """Runner 通过此工厂函数实例化插件。"""
+    return DiaryPlugin()
