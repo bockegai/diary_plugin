@@ -1,7 +1,7 @@
 """QQ 空间日记发布器。
 
-通过 Napcat HTTP API 拉 QQ 空间 cookies,然后调
-``emotion_cgi_publish_v6`` 发说说。
+通过 OneBot HTTP API(/get_cookies)拉 QQ 空间 cookies(Napcat / SnowLuma 通用),
+然后调 ``emotion_cgi_publish_v6`` 发说说。
 
 UIN 由调用方通过 ``await ctx.config.get("bot.qq_account", 0)`` 取得后
 传入(原 legacy 是 storage.py 自己读 config_api,本期解耦)。
@@ -34,19 +34,16 @@ class QzonePublisher:
         safe_uin = max(self.uin, 0)
         self.cookie_file = os.path.join(base, "data", f"qzone_cookies_{safe_uin}.json")
 
-    async def publish(
-        self,
-        content: str,
-        napcat_host: str = "127.0.0.1",
-        napcat_port: str = "9998",
-        napcat_token: str = "",
-    ) -> bool:
+    async def publish(self, content: str, *,
+                      http_host: str = "127.0.0.1",
+                      http_port: str = "9998",
+                      http_token: str = "") -> bool:
         """发布日记到 QQ 空间。返回是否成功。"""
         if self.uin <= 0:
             logger.error("uin 未配置,无法发布 QQ 空间")
             return False
 
-        if not await self._renew_cookies(napcat_host, napcat_port, napcat_token):
+        if not await self._renew_cookies(http_host, http_port, http_token):
             logger.error("无法获取 QQ 空间 cookies")
             return False
 
@@ -98,9 +95,9 @@ class QzonePublisher:
             return False
 
     async def _renew_cookies(self, host: str, port: str, token: str) -> bool:
-        """通过 Napcat 拉新 cookies 写到 cookie_file。失败则尝试加载旧文件。"""
+        """通过 OneBot HTTP API 拉新 cookies 写到 cookie_file。失败则尝试加载旧文件。"""
         try:
-            cookie_dict = await self._fetch_cookies_via_napcat(host, port, token)
+            cookie_dict = await self._fetch_cookies(host, port, token)
             os.makedirs(os.path.dirname(self.cookie_file), exist_ok=True)
             with open(self.cookie_file, "w", encoding="utf-8") as f:
                 json.dump(cookie_dict, f, ensure_ascii=False, indent=4)
@@ -109,7 +106,7 @@ class QzonePublisher:
                 self.gtk2 = self._gen_gtk(cookie_dict["p_skey"])
             return True
         except Exception as exc:
-            logger.error("Napcat 取 cookies 失败: %s", exc)
+            logger.error("获取 cookies 失败(%s:%s): %s", host, port, exc)
             # fallback: 加载本地缓存
             try:
                 if os.path.exists(self.cookie_file):
@@ -124,14 +121,16 @@ class QzonePublisher:
             return False
 
     @staticmethod
-    async def _fetch_cookies_via_napcat(host: str, port: str, token: str) -> Dict[str, str]:
-        """调 Napcat /get_cookies 取 user.qzone.qq.com 的 cookies。"""
+    async def _fetch_cookies(host: str, port: str, token: str) -> Dict[str, str]:
+        """调 OneBot /get_cookies 取 user.qzone.qq.com 的 cookies。"""
         url = f"http://{host}:{port}/get_cookies"
         headers = {"Content-Type": "application/json"}
         if token:
             headers["Authorization"] = f"Bearer {token}"
         async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(url, json={"domain": "user.qzone.qq.com"}, headers=headers)
+            resp = await client.post(
+                url, json={"domain": "user.qzone.qq.com"}, headers=headers
+            )
             resp.raise_for_status()
         data = resp.json()
         if data.get("status") != "ok" or "cookies" not in data.get("data", {}):

@@ -233,9 +233,9 @@ class DiaryPipeline:
         try:
             success = await self._qzone_publisher.publish(
                 content,
-                napcat_host=cfg.napcat_host,
-                napcat_port=cfg.napcat_port,
-                napcat_token=cfg.napcat_token,
+                http_host=cfg.http_host,
+                http_port=cfg.http_port,
+                http_token=cfg.http_token,
             )
         except Exception as exc:
             logger.error("发布异常: %s", exc, exc_info=True)
