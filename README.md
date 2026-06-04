@@ -31,7 +31,7 @@ pip install -r requirements.txt
 
 或手动安装：
 ```bash
-pip install httpx pytz openai
+pip install httpx pytz openai tomlkit
 ```
 
 
@@ -142,21 +142,19 @@ enable_emotion_analysis = true
 
 ```toml
 [qzone_publishing]
-qzone_word_count = 300
-napcat_host = "127.0.0.1"
-napcat_port = "9998"
+qzone_min_word_count = 150
+qzone_max_word_count = 350
+http_host = "127.0.0.1"
+http_port = "9998"
+http_token = ""
 ```
 
-- `qzone_word_count`：QQ空间说说的字数限制，范围20-8000字，超过会自动截断
-- `napcat_host`：Napcat服务地址
-- `napcat_port`：Napcat服务端口
+- `qzone_min_word_count` / `qzone_max_word_count`：QQ 空间说说字数范围
+- `http_host` / `http_port` / `http_token`：OneBot HTTP 服务配置(Napcat / SnowLuma 通用),用于获取 QQ 空间 Cookie
 
-**Napcat配置要求**：
-1. 在napcat的webui中新建**http服务器**
-2. host填**127.0.0.1**，port填**9998**
-3. 启用**CORS和Websocket**
-
-
+**Cookie 服务配置要求**：
+- 在 OneBot 客户端(如 Napcat WebUI)中新建 HTTP 服务器,填 host / port,启用 CORS 和 Websocket
+- 若使用 SnowLuma,确保实例运行并开放 HTTP API 端口
 
 **Docker用户特别说明**：
 
@@ -166,9 +164,9 @@ napcat_port = "9998"
 如果您使用Docker部署：
 
 **配置方法**：
-1. 将napcat创建的`http server`中的`host`改为`core`或者`0.0.0.0（不推荐）`
-2. 将本插件的config.toml中的`napcat_host`值写为`napcat`
-3. 确保Docker网络配置正确，napcat容器能与MaiBot容器通信
+1. 将 OneBot 客户端创建的 HTTP Server 的 `host` 改为 `core` 或者 `0.0.0.0（不推荐）`
+2. 将本插件的 config.toml 中的 `http_host` 值写为容器名(如 `napcat`)
+3. 确保Docker网络配置正确，OneBot 容器能与MaiBot容器通信
 
 **已知限制**：
 - ⚠️ **QQ空间发布功能异常**：Docker环境下无法正常获取QQ空间cookies。
@@ -302,7 +300,7 @@ A: 检查min_message_count和min_messages_per_chat配置，或当天确实聊天
 
 **Q: QQ空间发布失败**
 
-A: 检查Napcat服务是否运行，端口配置是否正确
+A: 检查 OneBot HTTP 服务是否运行,端口配置是否正确
 
 **Q: 自定义模型返回400错误**
 

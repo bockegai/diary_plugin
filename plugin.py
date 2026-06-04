@@ -3,17 +3,19 @@
 业务逻辑全部抽到 ``pipelines/`` 子模块,本文件只负责装配 + 派发 + 调度器。
 """
 
+from pathlib import Path
+from typing import Any, Optional
 import asyncio
 import contextlib
 import datetime
 import logging
 import re
-from typing import Any, Optional
 
 from maibot_sdk import Command, MaiBotPlugin, Tool
 from maibot_sdk.types import ToolParameterInfo, ToolParamType
 
 from .config import DiaryPluginConfig
+from .config_upgrade import needs_rewrite, upgrade_and_write
 from .pipelines import (
     ChatResolver,
     DiaryPipeline,
@@ -40,6 +42,7 @@ class DiaryPlugin(MaiBotPlugin):
     _message_fetcher: Optional[MessageFetcher]
     _llm_runner: Optional[LLMRunner]
     _qzone_publisher: Optional[QzonePublisher]
+    _upgrading: bool = False
 
     def __init__(self) -> None:
         super().__init__()
@@ -54,6 +57,7 @@ class DiaryPlugin(MaiBotPlugin):
     # ===== 生命周期 =====
 
     async def on_load(self) -> None:
+        await self._maybe_upgrade_config()
         cfg = self.config
         self.ctx.logger.info(
             "diary_plugin v%s 已加载 (style=%s, schedule_time=%s, filter_mode=%s, "
@@ -83,6 +87,20 @@ class DiaryPlugin(MaiBotPlugin):
                 await self._scheduler_task
         self.ctx.logger.info("diary_plugin 已卸载")
 
+    async def _maybe_upgrade_config(self) -> None:
+        if self._upgrading:
+            return
+        config_path = Path(__file__).parent / "config.toml"
+        try:
+            if needs_rewrite(config_path):
+                self._upgrading = True
+                upgrade_and_write(config_path)
+                self.ctx.logger.info("config.toml 已重建(含字段注释)")
+        except Exception as exc:
+            self.ctx.logger.warning("config.toml 升级失败: %s", exc)
+        finally:
+            self._upgrading = False
+
     async def on_config_update(
         self,
         scope: str,
@@ -91,6 +109,7 @@ class DiaryPlugin(MaiBotPlugin):
     ) -> None:
         del config_data
         self.ctx.logger.info("配置更新: scope=%s version=%s,重建 pipeline", scope, version)
+        await self._maybe_upgrade_config()
         await self._build_pipeline()
 
     async def _build_pipeline(self) -> None:
@@ -340,7 +359,7 @@ class DiaryPlugin(MaiBotPlugin):
                 await self.ctx.send.text("已成功发布到 QQ 空间！", stream_id)
             else:
                 await self.ctx.send.text(
-                    "⚠️ QQ 空间发布失败,可能原因:\n1. Napcat 服务未启动\n2. 端口配置错误\n3. QQ 空间权限问题",
+                    "⚠️ QQ 空间发布失败,可能原因:\n1. OneBot HTTP 服务未启动\n2. 端口配置错误\n3. QQ 空间权限问题",
                     stream_id,
                 )
         return True, result, True
