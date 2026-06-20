@@ -96,14 +96,14 @@ class CustomModelSection(PluginConfigBase):
 
     use_custom_model: bool = Field(default=False, description="启用自定义模型(否则使用下方 default_model 走系统 task)")
     api_url: str = Field(
-        default="http://rinkoai.com/v1",
+        default="https://api.deepseek.com/v1",
         description=(
             "OpenAI 兼容格式的 API 地址。仅支持 OpenAI 协议,不支持 Gemini / Claude 原生格式。"
-            "推荐站点: http://rinkoai.com/pricing"
+            "推荐站点: https://api.deepseek.com"
         ),
     )
-    api_key: str = Field(default="your-rinko-key-here", description="API 密钥")
-    model_name: str = Field(default="Pro/deepseek-ai/DeepSeek-V3", description="模型名称")
+    api_key: str = Field(default="your-deepseek-key-here", description="API 密钥")
+    model_name: str = Field(default="deepseek-v4-pro", description="模型名称")
     temperature: float = Field(default=0.7, description="生成温度")
     api_timeout: int = Field(default=300, ge=1, le=6000, description="API 调用超时(秒),大量聊天记录建议设置更长")
 
