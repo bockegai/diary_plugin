@@ -2,7 +2,7 @@
 
 公共导出:
 - DiaryStorage:          JSON 文件落库
-- QzonePublisher:        QQ 空间发布(Napcat 协议)
+- QzonePublisher:        QQ 空间发布(OneBot HTTP API)
 - LLMRunner / LLMCallError: ctx.llm.generate 包装
 - ChatResolver:          group/private → session_id
 - MessageFetcher:        ctx.message 抓取 + 黑/白名单 + 单聊条数过滤

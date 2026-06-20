@@ -9,6 +9,9 @@ from typing import Literal
 
 from maibot_sdk import Field, PluginConfigBase
 
+PLUGIN_VERSION = "3.1.0"
+CONFIG_VERSION = "3.1.0"
+
 
 # ---------------------------------------------------------------------------
 # Sections
@@ -23,8 +26,8 @@ class PluginSection(PluginConfigBase):
     __ui_order__ = 0
 
     name: str = Field(default="diary_plugin", description="插件名称")
-    version: str = Field(default="3.0.0", description="插件版本")
-    config_version: str = Field(default="3.0.0", description="配置版本(Runner 用于兼容性校验)")
+    version: str = Field(default=PLUGIN_VERSION, description="插件版本")
+    config_version: str = Field(default=CONFIG_VERSION, description="配置版本(Runner 用于兼容性校验)")
     enabled: bool = Field(default=True, description="是否启用插件")
     admin_qqs: list[int] = Field(
         default_factory=list,
@@ -78,9 +81,9 @@ class QzonePublishingSection(PluginConfigBase):
 
     qzone_min_word_count: int = Field(default=150, ge=20, le=8000, description="最小字数,范围 20-8000")
     qzone_max_word_count: int = Field(default=350, ge=20, le=8000, description="最大字数,范围 20-8000,必须 ≥ 最小值")
-    napcat_host: str = Field(default="127.0.0.1", description="Napcat 服务地址,Docker 环境可使用 'napcat'")
-    napcat_port: str = Field(default="9998", description="Napcat 服务端口")
-    napcat_token: str = Field(default="", description="Napcat 认证 Token,在 Napcat WebUI 网络配置中设置;为空则不使用 token")
+    http_host: str = Field(default="127.0.0.1", description="OneBot HTTP 服务地址(Napcat / SnowLuma 通用)")
+    http_port: str = Field(default="9998", description="OneBot HTTP 服务端口")
+    http_token: str = Field(default="", description="OneBot 认证 Token;为空则不使用 token")
 
 
 class CustomModelSection(PluginConfigBase):
