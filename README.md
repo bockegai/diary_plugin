@@ -160,9 +160,6 @@ napcat_port = "9998"
 
 **Docker用户特别说明**：
 
-> [!WARNING]
-> **Docker环境限制**：目前存在问题，发送空间相关无法正常运行。
-
 如果您使用Docker部署：
 
 **配置方法**：
@@ -171,9 +168,7 @@ napcat_port = "9998"
 3. 确保Docker网络配置正确，napcat容器能与MaiBot容器通信
 
 **已知限制**：
-- ⚠️ **QQ空间发布功能异常**：Docker环境下无法正常获取QQ空间cookies。
-- ⚠️ **定时任务功能异常**：定时是直接将日记发送到空间的，所以也无法正常工作。
-- ✅ **日记生成功能完全正常**：不影响日记内容生成和本地存储（可以通过指令生成本地日记）。
+- 无
 
 **可以尝试使用空间插件提供的其它获取cookies的方式去手动获取、生成。（在文档最后有空间插件地址）**
 
@@ -186,9 +181,9 @@ napcat_port = "9998"
 ```toml
 [custom_model]
 use_custom_model = false
-api_url = "http://rinkoai.com/v1"
-api_key = "sk-your-rinko-key-here"
-model_name = "Pro/deepseek-ai/DeepSeek-V3"
+api_url = "https://api.deepseek.com/v1"
+api_key = "sk-your-deepseek-key-here"
+model_name = "deepseek-v4-pro"
 temperature = 0.7
 max_context_tokens = 256
 api_timeout = 300
@@ -205,12 +200,8 @@ api_timeout = 300
 **API URL 格式说明**：
 ```toml
 # ✅ 正确格式（基础URL）
-api_url = "http://rinkoai.com/v1"
+api_url = "https://api.deepseek.com/v1"
 api_url = "https://api.siliconflow.cn/v1"
-
-# ❌ 错误格式（包含具体端点）
-api_url = "http://rinkoai.com/v1/chat/completions"
-```
 
 **重要限制**：
 
