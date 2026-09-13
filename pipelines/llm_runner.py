@@ -1,8 +1,8 @@
 """LLM 调用包装。
 
 设计要点:
-- 必须显式传 ``model=`` 参数,否则 host ``resolve_task_name("")`` 字母序回退到
-  ``embedding`` task,导致 chat completion 失败。
+- 必须通过 ``task_name=`` 传递配置中的任务名,保留该任务的模型选择策略。
+  SDK 的 ``model`` / ``model_name`` 参数仅用于指定具体模型。
 - 区分"调用失败"(异常 / success=False / 超时) vs "模型返空响应"。
 
 ⚠️ 已知限制:host 侧 RPC 桥接层硬编码 30s 超时
@@ -50,13 +50,13 @@ class LLMRunner:
             logger.warning("prompt 为空,跳过 LLM 调用")
             return ""
 
-        target_model = str(self._config.model_name or "replyer")
+        task_name = self._config.model_name
         temperature = self._config.temperature
         timeout = max(int(self._config.llm_timeout_seconds or 60), 1)
         logger.info(
-            "调用 ctx.llm.generate model=%s temperature=%s prompt_len=%d timeout=%ds "
+            "调用 ctx.llm.generate task_name=%s temperature=%s prompt_len=%d timeout=%ds "
             "(注意: host RPC 层硬上限 30s,超过则切 custom_model 直连)",
-            target_model,
+            task_name,
             temperature,
             len(prompt),
             timeout,
@@ -66,7 +66,7 @@ class LLMRunner:
             result = await asyncio.wait_for(
                 self._ctx.llm.generate(
                     prompt=prompt,
-                    model=target_model,
+                    task_name=task_name,
                     temperature=temperature,
                 ),
                 timeout=timeout,
@@ -96,6 +96,6 @@ class LLMRunner:
         response_text = str(result.get("response") or "")
         if not success:
             err = result.get("error") or "<no error key>"
-            logger.error("LLM 调用失败 model=%s error=%s", target_model, err)
+            logger.error("LLM 调用失败 task_name=%s error=%s", task_name, err)
             raise LLMCallError(f"LLM 调用失败: {err}")
         return response_text.strip()

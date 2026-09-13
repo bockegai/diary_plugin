@@ -111,8 +111,7 @@ class CustomModelSection(PluginConfigBase):
 class DefaultModelSection(PluginConfigBase):
     """系统默认模型配置(走 ctx.llm.generate 时使用)。
 
-    显式声明 model 参数,避免 host ``resolve_task_name("")`` 字母序回退到
-    ``embedding`` task。
+    通过 ``task_name`` 传递任务名,与 ``model`` / ``model_name`` 的具体模型名语义区分。
     """
 
     __ui_label__ = "默认模型"
