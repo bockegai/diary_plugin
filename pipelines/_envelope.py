@@ -9,9 +9,11 @@ from typing import Any
 
 
 def peel_envelope(result: Any, *, max_depth: int = 4) -> Any:
-    """递归脱掉 ``{"success": ..., "result": <inner>}`` 信封。"""
+    """递归脱掉成功信封，保留失败响应及其错误信息。"""
     for _ in range(max_depth):
         if not isinstance(result, dict):
+            return result
+        if result.get("success") is False:
             return result
         if "result" not in result or "success" not in result:
             return result
