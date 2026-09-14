@@ -3,12 +3,13 @@
 业务逻辑全部抽到 ``pipelines/`` 子模块,本文件只负责装配 + 派发 + 调度器。
 """
 
+from typing import Any, Dict, List, Optional
+
 import asyncio
 import contextlib
 import datetime
 import logging
 import re
-from typing import Any, Optional
 
 from maibot_sdk import Command, MaiBotPlugin, Tool
 from maibot_sdk.types import ToolParameterInfo, ToolParamType
@@ -287,9 +288,33 @@ class DiaryPlugin(MaiBotPlugin):
 
     # ===== 子命令实现 =====
 
+    async def _fetch_command_messages(
+        self,
+        date: str,
+        stream_id: str,
+        group_id: str,
+        *,
+        ignore_min_messages_per_chat: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """群命令限定当前真实会话，私聊命令沿用全局日记范围。"""
+        if group_id:
+            if not stream_id:
+                raise ValueError("无法确定当前群聊会话，已停止读取消息")
+            # 同一群可对应多个账号的会话，不能按群号重新选取第一个会话。
+            return await self._pipeline.fetch_messages_for_date(
+                date,
+                target_chats=[stream_id],
+                ignore_min_messages_per_chat=ignore_min_messages_per_chat,
+            )
+        return await self._pipeline.fetch_messages_for_date(
+            date,
+            ignore_filter=True,
+            ignore_min_messages_per_chat=ignore_min_messages_per_chat,
+        )
+
     async def _cmd_generate(self, param: str, stream_id: str, group_id: str) -> tuple:
         try:
-            date = format_date_str(param if param else datetime.datetime.now())
+            date = format_date_str(param if param else self._get_now())
         except ValueError as exc:
             if stream_id:
                 await self.ctx.send.text(
@@ -301,30 +326,8 @@ class DiaryPlugin(MaiBotPlugin):
         if stream_id:
             await self.ctx.send.text(f"我正在写 {date} 的日记...", stream_id)
 
-        # generate 命令忽略黑白名单。如果在群聊中执行,只取该群的消息;否则全局
-        if group_id:
-            try:
-                stream = await self.ctx.chat.get_stream_by_group_id(group_id)
-                stream = peel_envelope(stream)
-                if isinstance(stream, dict):
-                    target_stream = stream.get("stream", stream)
-                    if isinstance(target_stream, dict):
-                        sid = target_stream.get("session_id") or target_stream.get("stream_id")
-                        if sid:
-                            messages = await self._pipeline.fetch_messages_for_date(
-                                date, target_chats=[sid]
-                            )
-                        else:
-                            messages = await self._pipeline.fetch_messages_for_date(date, ignore_filter=True)
-                    else:
-                        messages = await self._pipeline.fetch_messages_for_date(date, ignore_filter=True)
-                else:
-                    messages = await self._pipeline.fetch_messages_for_date(date, ignore_filter=True)
-            except Exception as exc:
-                self.ctx.logger.warning("群聊 chat 查询失败,降级全局: %s", exc)
-                messages = await self._pipeline.fetch_messages_for_date(date, ignore_filter=True)
-        else:
-            messages = await self._pipeline.fetch_messages_for_date(date, ignore_filter=True)
+        # generate 命令忽略黑白名单。如果在群聊中执行,只取当前会话的消息;否则全局
+        messages = await self._fetch_command_messages(date, stream_id, group_id)
 
         success, result = await self._pipeline.generate_from_messages(date, messages, force_50k=True)
         if not success:
@@ -348,7 +351,7 @@ class DiaryPlugin(MaiBotPlugin):
     async def _cmd_view(self, param: str, stream_id: str) -> tuple:
         args = param.split() if param else []
         try:
-            date = format_date_str(args[0] if args else datetime.datetime.now())
+            date = format_date_str(args[0] if args else self._get_now())
         except ValueError as exc:
             if stream_id:
                 await self.ctx.send.text(f"❌ 日期格式错误: {exc}", stream_id)
@@ -466,7 +469,7 @@ class DiaryPlugin(MaiBotPlugin):
 
     async def _cmd_debug(self, param: str, stream_id: str, group_id: str) -> tuple:
         try:
-            date = format_date_str(param if param else datetime.datetime.now())
+            date = format_date_str(param if param else self._get_now())
         except ValueError as exc:
             if stream_id:
                 await self.ctx.send.text(f"❌ 日期格式错误: {exc}", stream_id)
@@ -483,29 +486,11 @@ class DiaryPlugin(MaiBotPlugin):
         except Exception:
             bot_nickname = "麦麦"
 
-        # 取当日消息(忽略黑白名单,如果在群聊则限定该群)
-        try:
-            if group_id:
-                stream = await self.ctx.chat.get_stream_by_group_id(group_id)
-                stream = peel_envelope(stream)
-                target_stream = stream.get("stream", stream) if isinstance(stream, dict) else None
-                if isinstance(target_stream, dict):
-                    sid = target_stream.get("session_id") or target_stream.get("stream_id")
-                else:
-                    sid = None
-                if sid:
-                    messages = await self._pipeline.fetch_messages_for_date(date, target_chats=[sid], ignore_min_messages_per_chat=True)
-                    context_desc = f"【本群】({group_id} → {sid})"
-                else:
-                    messages = []
-                    context_desc = f"【本群】({group_id} → 未找到)"
-            else:
-                messages = await self._pipeline.fetch_messages_for_date(date, ignore_filter=True, ignore_min_messages_per_chat=True)
-                context_desc = "【全局日记】"
-        except Exception as exc:
-            self.ctx.logger.error("debug 取消息失败: %s", exc, exc_info=True)
-            messages = []
-            context_desc = "【取消息失败】"
+        # 与 generate 使用同一会话范围，但调试时保留低于条数门槛的消息。
+        messages = await self._fetch_command_messages(
+            date, stream_id, group_id, ignore_min_messages_per_chat=True
+        )
+        context_desc = f"【本群】({group_id} → {stream_id})" if group_id else "【全局日记】"
 
         bot_msgs = 0
         user_msgs = 0

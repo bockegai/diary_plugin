@@ -8,8 +8,9 @@
 ``src/plugin_runtime/host/message_utils.py:_session_message_to_dict``。
 """
 
-import logging
 from typing import TYPE_CHECKING, Any, Dict, List
+
+import logging
 
 from ._envelope import peel_envelope
 from .chat_resolver import ChatResolver, parse_target_config, resolve_filter_strategy
@@ -18,6 +19,10 @@ if TYPE_CHECKING:
     from maibot_sdk import PluginContext
 
 logger = logging.getLogger(__name__)
+
+
+class MessageFetchError(RuntimeError):
+    """消息查询失败，不应被当成零条聊天记录。"""
 
 
 def _msg_time(msg: Dict[str, Any]) -> float:
@@ -76,22 +81,20 @@ class MessageFetcher:
                 result = await self._ctx.message.get_by_time(**kwargs)
         except Exception as exc:
             logger.error("ctx.message 查询失败 (chat_id=%s): %s", chat_id, exc, exc_info=True)
-            return []
+            raise MessageFetchError(f"消息接口调用失败 ({type(exc).__name__}): {exc}") from exc
 
         # SDK _normalize_capability_result 已自动剥 message.get_by_time* 的 messages 字段,
         # 正常时直接返回 list[dict]。但 host 返回 success=False / 走 unknown capability 时
         # 会保留 dict envelope,这里两种形态都兼容。
         result = peel_envelope(result)
-        if isinstance(result, list):
-            return [m for m in result if isinstance(m, dict)]
         if isinstance(result, dict):
             if not result.get("success", True):
                 logger.warning("ctx.message 返回 success=False: %s", result.get("error"))
-                return []
-            messages = result.get("messages") or []
-            return [m for m in messages if isinstance(m, dict)]
-        logger.warning("ctx.message 返回非 list/dict: %s", type(result).__name__)
-        return []
+                raise MessageFetchError(f"消息接口查询失败: {result.get('error', '未知错误')}")
+            result = result.get("messages")
+        if not isinstance(result, list) or any(not isinstance(message, dict) for message in result):
+            raise MessageFetchError("消息接口返回格式异常，预期为消息字典列表")
+        return result
 
     async def fetch_for_chats(
         self,

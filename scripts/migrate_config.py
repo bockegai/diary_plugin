@@ -42,7 +42,7 @@ def migrate(path: str) -> bool:
     lines = text.split("\n")
     out = []
     skip_next_blank = False
-    for i, line in enumerate(lines):
+    for line in lines:
         stripped = line.strip()
         if re.match(r"^enable_action\s*=", stripped):
             print("[migrate] 删除 enable_action 配置行")
@@ -66,12 +66,12 @@ def migrate(path: str) -> bool:
     if n:
         text = new_text
         changed = True
-        print(f"[migrate] config_version → 3.0.0")
+        print("[migrate] config_version → 3.0.0")
 
     # 4. 添加 [default_model] section(若缺失)
     if "[default_model]" not in text:
         section = (
-            "\n\n# 默认模型配置(走 ctx.llm.generate 时使用,显式 model 避开 host Bug C)\n"
+            "\n\n# 默认模型配置(走 ctx.llm.generate 时使用,通过 task_name 选择系统任务)\n"
             "[default_model]\n\n"
             "# 系统模型 task,与 host model_configs.py 的 chat 类 task 对齐\n"
             '# 可选: replyer | utils | planner | vlm\n'
