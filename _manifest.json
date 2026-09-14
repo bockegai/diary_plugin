@@ -1,6 +1,6 @@
 {
   "manifest_version": 2,
-  "version": "3.0.0",
+  "version": "3.0.1",
   "name": "日记插件 (Diary Plugin)",
   "description": "让麦麦能够回忆和记录每一天的聊天，生成个性化的日记内容(适配新版 MaiBot SDK 2.3+)",
   "author": {
