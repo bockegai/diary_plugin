@@ -8,9 +8,10 @@
 ``src/plugin_runtime/host/message_utils.py:_session_message_to_dict``。
 """
 
-from typing import TYPE_CHECKING, Any, Dict, List
-
 import logging
+import re
+from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING, Any, Dict, List
 
 from ._envelope import peel_envelope
 from .chat_resolver import ChatResolver, parse_target_config, resolve_filter_strategy
@@ -23,6 +24,13 @@ logger = logging.getLogger(__name__)
 
 class MessageFetchError(RuntimeError):
     """消息查询失败，不应被当成零条聊天记录。"""
+
+
+# 宿主查询两端都包含，且数据库精度为微秒；分段必须相邻但不重叠。
+_QUERY_WINDOW = timedelta(hours=1)
+_TIME_STEP = timedelta(microseconds=1)
+# 传输层没有独立的超限错误码，只能识别它的具体错误消息后缩小区间。
+_FRAME_SIZE_ERROR = re.compile(r"帧大小 \d+ 超过最大限制 \d+")
 
 
 def _msg_time(msg: Dict[str, Any]) -> float:
@@ -57,13 +65,13 @@ class MessageFetcher:
         self._ctx = ctx
         self._resolver = chat_resolver
 
-    async def _list_messages(
+    async def _fetch_window(
         self,
         start_time: float,
         end_time: float,
-        chat_id: str = "",
+        chat_id: str,
     ) -> List[Dict[str, Any]]:
-        """调 ctx.message,统一参数 + 剥信封 + 取 messages 字段。"""
+        """查询完整时间段；失败一律抛 MessageFetchError。"""
         kwargs: Dict[str, Any] = {
             "start_time": str(start_time),
             "end_time": str(end_time),
@@ -80,7 +88,15 @@ class MessageFetcher:
                 kwargs.pop("filter_command", None)
                 result = await self._ctx.message.get_by_time(**kwargs)
         except Exception as exc:
-            logger.error("ctx.message 查询失败 (chat_id=%s): %s", chat_id, exc, exc_info=True)
+            if not _FRAME_SIZE_ERROR.search(str(exc)):
+                logger.error(
+                    "ctx.message 查询失败 (chat_id=%s, window=[%s, %s]): %s",
+                    chat_id,
+                    start_time,
+                    end_time,
+                    exc,
+                    exc_info=True,
+                )
             raise MessageFetchError(f"消息接口调用失败 ({type(exc).__name__}): {exc}") from exc
 
         # SDK _normalize_capability_result 已自动剥 message.get_by_time* 的 messages 字段,
@@ -95,6 +111,37 @@ class MessageFetcher:
         if not isinstance(result, list) or any(not isinstance(message, dict) for message in result):
             raise MessageFetchError("消息接口返回格式异常，预期为消息字典列表")
         return result
+
+    async def _list_messages(
+        self,
+        start_time: float,
+        end_time: float,
+        chat_id: str = "",
+    ) -> List[Dict[str, Any]]:
+        """分段取完整区间；超限时只二分失败段，不截断或跳过消息。"""
+        cursor = datetime.fromtimestamp(start_time, timezone.utc)
+        end = datetime.fromtimestamp(end_time, timezone.utc)
+        collected: List[Dict[str, Any]] = []
+        while cursor <= end:
+            window_end = min(cursor + _QUERY_WINDOW - _TIME_STEP, end)
+            pending = [(cursor, window_end)]
+            while pending:
+                lower, upper = pending.pop()
+                try:
+                    batch = await self._fetch_window(
+                        lower.timestamp(), upper.timestamp(), chat_id
+                    )
+                except MessageFetchError as exc:
+                    if not _FRAME_SIZE_ERROR.search(str(exc)) or lower == upper:
+                        raise
+                    midpoint = lower + (upper - lower) // 2
+                    # 栈先处理左段。微秒边界不重叠，不依赖 message_id 全局唯一。
+                    pending.append((midpoint + _TIME_STEP, upper))
+                    pending.append((lower, midpoint))
+                else:
+                    collected.extend(batch)
+            cursor = window_end + _TIME_STEP
+        return collected
 
     async def fetch_for_chats(
         self,
