@@ -95,6 +95,16 @@ pip install httpx pytz openai
 /diary help                  # 显示所有可用命令
 ```
 
+### WebUI 日记管理
+
+宿主支持插件 WebUI 时，打开 WebUI 侧栏中的“日记管理”页面即可：
+
+- 查看每一天的日记列表，点击任意一行查看日记详情；
+- 在详情弹窗中删除指定日记；
+- 在“立即生成”标签页选择日期并立即生成日记（日期留空表示今天）。
+
+“立即生成”会在后台执行，页面每 3 秒自动刷新一次生成状态和日记列表，避免长时间生成导致 WebUI 请求超时。
+
 
 
 ## 配置说明
@@ -104,7 +114,7 @@ pip install httpx pytz openai
 ```toml
 [plugin]
 enabled = true
-config_version = "2.0.0"
+config_version = "3.1.0"
 admin_qqs = []
 ```
 
@@ -142,12 +152,15 @@ enable_emotion_analysis = true
 
 ```toml
 [qzone_publishing]
-qzone_word_count = 300
+enabled = true
+qzone_min_word_count = 150
+qzone_max_word_count = 350
 napcat_host = "127.0.0.1"
 napcat_port = "9998"
 ```
 
-- `qzone_word_count`：QQ空间说说的字数限制，范围20-8000字，超过会自动截断
+- `enabled`：是否把生成的日记发布到 QQ 空间，默认开启。关闭后生成日记不会再发布，也不会再提示“发布 QQ 空间失败”
+- `qzone_min_word_count` / `qzone_max_word_count`：QQ空间说说的字数范围，范围20-8000字，生成时会从该区间随机取目标字数
 - `napcat_host`：Napcat服务地址
 - `napcat_port`：Napcat服务端口
 
@@ -221,6 +234,8 @@ schedule_time = "23:30"
 timezone = "Asia/Shanghai"
 filter_mode = "whitelist"
 target_chats = []
+send_to_private = false
+private_target = ""
 ```
 
 - `schedule_time`：每日生成日记的时间，HH:MM格式
@@ -231,6 +246,10 @@ target_chats = []
 - `filter_mode`：过滤模式，可选值whitelist(白名单)或blacklist(黑名单)
 
 - `target_chats`：目标列表，格式["group:群号", "private:用户qq号"]
+
+- `send_to_private`：定时日记生成完成后，是否把日记发送到指定私聊，默认关闭
+
+- `private_target`：私聊发送目标，格式为 `平台:qq号`，例如 `qq:111111`。平台填写适配器标识（QQ 适配器通常为 `qq`），冒号后填写目标 QQ 号
 
 > [!NOTE]
 >
@@ -249,6 +268,10 @@ target_chats = ["group:123456789", "private:987654321"]
 # 排除特定聊天
 filter_mode = "blacklist"
 target_chats = ["group:999999"]
+
+# 定时日记生成完成后发送到 QQ 111111 的私聊
+send_to_private = true
+private_target = "qq:111111"
 ```
 
 
@@ -306,6 +329,14 @@ A: 检查API地址、密钥和模型名称是否正确，确认服务商支持Op
 **Q: 定时任务没有执行**
 
 A: 检查filter_mode和target_chats配置，白名单空列表会禁用定时任务
+
+**Q: 看不到“日记管理”页面**
+
+A: 该页面依赖宿主提供的插件 WebUI 能力。请升级到支持插件 WebUI 的 MaiBot 版本；旧版本仍可使用 `/diary view`、`/diary generate` 等命令完成查看和生成。
+
+**Q: 定时日记没有发送到私聊**
+
+A: 检查 `send_to_private` 是否开启，以及 `private_target` 是否为 `平台:qq号` 格式（例如 `qq:111111`）。插件会优先复用已有私聊会话，必要时通过 `chat.open_session` 创建；host 不支持该能力时只能发送到已存在的私聊。
 
 **Q: API调用超时，提示"超时错误"**
 

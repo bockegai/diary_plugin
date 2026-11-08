@@ -1,0 +1,256 @@
+{
+  "schema_version": 2,
+  "required_capabilities": [
+    "declarative_basic"
+  ],
+  "workspace_title": "日记插件",
+  "pages": [
+    {
+      "id": "diary_manager",
+      "title": "日记管理",
+      "description": "查看每一天的日记、打开详情、删除日记，或立即生成指定日期的日记。",
+      "icon": "list",
+      "mode": "declarative",
+      "poll_interval_seconds": 3,
+      "queries": {
+        "overview": {
+          "api": "diary_overview",
+          "version": "1"
+        },
+        "generation": {
+          "api": "diary_generation_status",
+          "version": "1"
+        }
+      },
+      "actions": {
+        "generate": {
+          "api": "diary_generate_now",
+          "version": "1",
+          "parameters": {
+            "date": {
+              "type": "string",
+              "required": false,
+              "max_length": 10
+            }
+          }
+        },
+        "delete": {
+          "api": "diary_delete",
+          "version": "1",
+          "parameters": {
+            "filename": {
+              "type": "string",
+              "required": true,
+              "max_length": 64
+            }
+          },
+          "arguments": {
+            "filename": {
+              "scope": "selection",
+              "source": "diaryRow",
+              "field": "filename"
+            }
+          },
+          "confirmation": "确定要删除这篇日记吗？删除后无法恢复。"
+        }
+      },
+      "content": [
+        {
+          "type": "grid",
+          "columns": 3,
+          "children": [
+            {
+              "type": "stat",
+              "label": "日记总数",
+              "value": {
+                "source": "overview",
+                "field": "total_count"
+              }
+            },
+            {
+              "type": "stat",
+              "label": "总字数",
+              "value": {
+                "source": "overview",
+                "field": "total_words"
+              }
+            },
+            {
+              "type": "stat",
+              "label": "最新日期",
+              "value": {
+                "source": "overview",
+                "field": "latest_date"
+              }
+            }
+          ]
+        },
+        {
+          "type": "tabs",
+          "children": [
+            {
+              "type": "stack",
+              "label": "日记浏览",
+              "children": [
+                {
+                  "type": "text",
+                  "value": "还没有日记，可以在“立即生成”标签页生成一篇。",
+                  "when": {
+                    "reference": {
+                      "source": "overview",
+                      "field": "diaries"
+                    },
+                    "operator": "empty"
+                  }
+                },
+                {
+                  "type": "table",
+                  "label": "全部日记（点击一行查看详情）",
+                  "value": {
+                    "source": "overview",
+                    "field": "diaries"
+                  },
+                  "selection": "diaryRow",
+                  "detail": "diaryDetail",
+                  "columns": [
+                    {
+                      "field": "date",
+                      "label": "日期"
+                    },
+                    {
+                      "field": "generated_at",
+                      "label": "生成时间"
+                    },
+                    {
+                      "field": "word_count",
+                      "label": "字数"
+                    },
+                    {
+                      "field": "publish_status",
+                      "label": "QQ 空间"
+                    },
+                    {
+                      "field": "status",
+                      "label": "状态"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "stack",
+              "label": "立即生成",
+              "children": [
+                {
+                  "type": "card",
+                  "label": "生成指定日期的日记",
+                  "children": [
+                    {
+                      "type": "date",
+                      "name": "date",
+                      "label": "日记日期（留空生成今天）",
+                      "value": null
+                    },
+                    {
+                      "type": "button",
+                      "label": "立即生成",
+                      "action": "generate"
+                    },
+                    {
+                      "type": "text",
+                      "label": "生成状态",
+                      "value": {
+                        "source": "generation",
+                        "field": "message"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "value": "生成会读取该日期的聊天记录，可能需要一段时间；完成后本页会自动刷新。是否发布到 QQ 空间由插件配置中的“QQ 空间发布”开关控制。"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "dialog",
+          "name": "diaryDetail",
+          "label": "日记详情",
+          "children": [
+            {
+              "type": "text",
+              "label": "日期",
+              "value": {
+                "scope": "selection",
+                "source": "diaryRow",
+                "field": "date"
+              }
+            },
+            {
+              "type": "text",
+              "label": "生成时间",
+              "value": {
+                "scope": "selection",
+                "source": "diaryRow",
+                "field": "generated_at"
+              }
+            },
+            {
+              "type": "text",
+              "label": "字数",
+              "value": {
+                "scope": "selection",
+                "source": "diaryRow",
+                "field": "word_count"
+              }
+            },
+            {
+              "type": "text",
+              "label": "天气",
+              "value": {
+                "scope": "selection",
+                "source": "diaryRow",
+                "field": "weather"
+              }
+            },
+            {
+              "type": "text",
+              "label": "QQ 空间",
+              "value": {
+                "scope": "selection",
+                "source": "diaryRow",
+                "field": "publish_status"
+              }
+            },
+            {
+              "type": "text",
+              "label": "状态",
+              "value": {
+                "scope": "selection",
+                "source": "diaryRow",
+                "field": "status"
+              }
+            },
+            {
+              "type": "text",
+              "label": "内容",
+              "value": {
+                "scope": "selection",
+                "source": "diaryRow",
+                "field": "diary_content"
+              }
+            },
+            {
+              "type": "button",
+              "label": "删除这篇日记",
+              "action": "delete",
+              "variant": "danger"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

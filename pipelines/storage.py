@@ -9,12 +9,16 @@ import datetime
 import json
 import logging
 import os
+import re
 import time
 from typing import Any, Dict, List, Optional
 
 from ..utils.date import format_date_str
 
 logger = logging.getLogger(__name__)
+
+# 与 save_diary 生成的文件名保持一致，删除接口只接受这种形状。
+_DIARY_FILENAME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{6}\.json$")
 
 
 class DiaryStorage:
@@ -78,6 +82,61 @@ class DiaryStorage:
         except Exception as exc:
             logger.error("读取日期日记失败: %s", exc, exc_info=True)
             return []
+
+    async def list_diary_entries(self, limit: int = 0) -> List[Dict[str, Any]]:
+        """列出日记并附带文件名，供 WebUI 查看和删除。
+
+        返回的是文件内容的浅拷贝，额外字段 ``filename`` 不会写回 JSON。
+        按生成时间降序；``limit=0`` 表示不限。
+        """
+        try:
+            if not os.path.exists(self.data_dir):
+                return []
+            results: List[Dict[str, Any]] = []
+            for filename in os.listdir(self.data_dir):
+                if not _DIARY_FILENAME_RE.match(filename):
+                    continue
+                file_path = os.path.join(self.data_dir, filename)
+                try:
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                except Exception as exc:
+                    logger.warning("读取日记文件 %s 失败: %s", filename, exc)
+                    continue
+                if not isinstance(data, dict):
+                    continue
+                entry = dict(data)
+                entry["filename"] = filename
+                results.append(entry)
+            results.sort(key=lambda d: d.get("generation_time", 0), reverse=True)
+            return results[:limit] if limit > 0 else results
+        except Exception as exc:
+            logger.error("列出日记条目失败: %s", exc, exc_info=True)
+            return []
+
+    async def delete_diary(self, filename: str) -> bool:
+        """按文件名删除一条日记，成功时重建 index.json。"""
+        name = str(filename or "").strip()
+        if not name or os.path.basename(name) != name or not _DIARY_FILENAME_RE.match(name):
+            logger.warning("拒绝删除非法日记文件名: %s", filename)
+            return False
+
+        file_path = os.path.join(self.data_dir, name)
+        if os.path.dirname(os.path.abspath(file_path)) != os.path.abspath(self.data_dir):
+            logger.warning("拒绝删除数据目录之外的文件: %s", filename)
+            return False
+        if not os.path.isfile(file_path):
+            logger.warning("要删除的日记不存在: %s", filename)
+            return False
+
+        try:
+            os.remove(file_path)
+            await self._update_index()
+            logger.info("已删除日记: %s", filename)
+            return True
+        except Exception as exc:
+            logger.error("删除日记 %s 失败: %s", filename, exc, exc_info=True)
+            return False
 
     async def list_diaries(self, limit: int = 10) -> List[Dict[str, Any]]:
         """列出最近 ``limit`` 条日记(0 表示不限)。按生成时间降序。"""
