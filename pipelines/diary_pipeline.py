@@ -156,6 +156,15 @@ class DiaryPipeline:
         except Exception:
             return datetime.datetime.now().strftime("%Y-%m-%d")
 
+    def today_str(self) -> str:
+        """公开的今日日期，供调度器发送私聊时使用。"""
+        return self._today_str()
+
+    @property
+    def qzone_publish_enabled(self) -> bool:
+        """是否允许发布到 QQ 空间。"""
+        return bool(self._config.qzone_publishing.enabled)
+
     async def generate_from_messages(
         self,
         date: str,
@@ -225,6 +234,9 @@ class DiaryPipeline:
             return False, f"生成日记时出错: {exc}"
 
     async def publish_to_qzone(self, date: str, content: str) -> bool:
+        if not self.qzone_publish_enabled:
+            logger.info("QQ 空间发布已关闭,跳过发布")
+            return False
         if not self._qzone_publisher:
             logger.warning("qzone_publisher 未装配,跳过发布")
             return False
@@ -261,6 +273,9 @@ class DiaryPipeline:
         success, result = await self.generate_from_messages(today, messages, force_50k=True)
         if not success:
             logger.error("定时日记生成失败 %s: %s", today, result)
+            return success, result
+        if not self.qzone_publish_enabled:
+            logger.info("定时日记 %s 生成成功 (%d 字),QQ 空间发布已关闭", today, len(result))
             return success, result
         publish_ok = await self.publish_to_qzone(today, result)
         if publish_ok:

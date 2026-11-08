@@ -10,8 +10,22 @@ import contextlib
 import datetime
 import logging
 import re
+import time
 
 from maibot_sdk import Command, MaiBotPlugin, Tool
+
+try:
+    from maibot_sdk import API
+except ImportError:  # pragma: no cover - 兼容不支持 WebUI 的旧版 SDK
+    def API(*_args: Any, **_kwargs: Any):
+        """旧版 SDK 没有 API 装饰器时退化为无操作装饰器。"""
+
+        def decorator(func):
+            return func
+
+        return decorator
+
+
 from maibot_sdk.types import ToolParameterInfo, ToolParamType
 
 from .config import DiaryPluginConfig
@@ -22,6 +36,7 @@ from .pipelines import (
     LLMRunner,
     MessageFetcher,
     QzonePublisher,
+    parse_private_target,
 )
 from .pipelines._envelope import peel_envelope
 from .utils.date import format_date_str
@@ -35,6 +50,8 @@ class DiaryPlugin(MaiBotPlugin):
     config_model = DiaryPluginConfig
 
     _scheduler_task: Optional[asyncio.Task]
+    _generation_task: Optional[asyncio.Task]
+    _generation_state: Dict[str, Any]
     _pipeline: Optional[DiaryPipeline]
     _storage: Optional[DiaryStorage]
     _chat_resolver: Optional[ChatResolver]
@@ -45,6 +62,8 @@ class DiaryPlugin(MaiBotPlugin):
     def __init__(self) -> None:
         super().__init__()
         self._scheduler_task = None
+        self._generation_task = None
+        self._generation_state = {"message": "尚未开始生成"}
         self._pipeline = None
         self._storage = None
         self._chat_resolver = None
@@ -82,6 +101,10 @@ class DiaryPlugin(MaiBotPlugin):
             self._scheduler_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._scheduler_task
+        if self._generation_task and not self._generation_task.done():
+            self._generation_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._generation_task
         self.ctx.logger.info("diary_plugin 已卸载")
 
     async def on_config_update(
@@ -170,17 +193,203 @@ class DiaryPlugin(MaiBotPlugin):
                 wait = self._next_run_seconds()
                 self.ctx.logger.info("下次定时日记: +%ds", int(wait))
                 await asyncio.sleep(wait)
-                if not self._ensure_pipeline_ready():
+                pipeline = self._pipeline
+                if pipeline is None:
                     self.ctx.logger.warning("pipeline 未就绪,跳过此次执行")
                     await asyncio.sleep(60)
                     continue
-                await self._pipeline.generate_and_publish_for_today()
+                today = pipeline.today_str()
+                success, result = await pipeline.generate_and_publish_for_today()
+                if success:
+                    await self._send_scheduled_diary_to_private(today, result)
             except asyncio.CancelledError:
                 self.ctx.logger.info("调度器收到取消信号")
                 break
             except Exception as exc:
                 self.ctx.logger.error("调度器异常: %s", exc, exc_info=True)
                 await asyncio.sleep(60)
+
+    # ===== WebUI 日记管理页 API =====
+
+    def _generation_busy(self) -> bool:
+        task = self._generation_task
+        return task is not None and not task.done()
+
+    @staticmethod
+    def _to_float(value: Any) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _update_generation_state(self, *, success: bool, message: str) -> None:
+        self._generation_state["success"] = success
+        self._generation_state["message"] = message
+
+    @API("diary_overview", description="读取日记统计和全部日记，供 WebUI 日记管理页使用", version="1")
+    async def api_diary_overview(self) -> Dict[str, Any]:
+        storage = self._storage
+        if storage is None:
+            raise ValueError("日记插件未就绪")
+
+        entries = await storage.list_diary_entries(limit=0)
+        total_words = sum(
+            int(entry.get("word_count") or len(str(entry.get("diary_content") or "")))
+            for entry in entries
+        )
+        latest_date = str(entries[0].get("date") or "无") if entries else "无"
+        diaries: List[Dict[str, Any]] = []
+        for entry in entries:
+            generation_time = self._to_float(entry.get("generation_time"))
+            moment = (
+                datetime.datetime.fromtimestamp(generation_time)
+                if generation_time > 0
+                else None
+            )
+            content = str(entry.get("diary_content") or "")
+            diaries.append({
+                "filename": str(entry.get("filename") or ""),
+                "date": str(entry.get("date") or ""),
+                "time": moment.strftime("%H:%M:%S") if moment else "--",
+                "generated_at": moment.strftime("%Y-%m-%d %H:%M:%S") if moment else "--",
+                "word_count": int(entry.get("word_count") or len(content)),
+                "weather": str(entry.get("weather") or ""),
+                "publish_status": "已发布" if entry.get("is_published_qzone") else "未发布",
+                "status": str(entry.get("status") or ""),
+                "diary_content": content,
+            })
+
+        return {
+            "total_count": len(entries),
+            "total_words": total_words,
+            "latest_date": latest_date,
+            "diaries": diaries,
+        }
+
+    @API("diary_generation_status", description="读取立即生成任务的当前状态", version="1")
+    async def api_diary_generation_status(self) -> Dict[str, Any]:
+        state = dict(self._generation_state)
+        finished_at = self._to_float(state.get("finished_at"))
+        return {
+            "running": self._generation_busy(),
+            "date": str(state.get("date") or ""),
+            "success": state.get("success"),
+            "message": str(state.get("message") or "尚未开始生成"),
+            "finished_at": (
+                datetime.datetime.fromtimestamp(finished_at).strftime("%H:%M:%S")
+                if finished_at > 0
+                else ""
+            ),
+        }
+
+    @API("diary_generate_now", description="立即生成指定日期(留空为今天)的日记", version="1")
+    async def api_diary_generate_now(self, date: str = "") -> Dict[str, Any]:
+        if self._storage is None or self._pipeline is None:
+            raise ValueError("日记插件未就绪")
+
+        target_date = format_date_str(date.strip() if date and date.strip() else self._get_now())
+        if self._generation_busy():
+            current = str(self._generation_state.get("date") or target_date)
+            return {
+                "started": False,
+                "date": current,
+                "message": f"{current} 的日记仍在生成中，请稍候",
+            }
+
+        self._generation_state = {
+            "date": target_date,
+            "running": True,
+            "success": None,
+            "message": f"正在生成 {target_date} 的日记...",
+            "started_at": time.time(),
+            "finished_at": None,
+        }
+        self._generation_task = asyncio.create_task(self._run_webui_generation(target_date))
+        return {
+            "started": True,
+            "date": target_date,
+            "message": f"已开始生成 {target_date} 的日记",
+        }
+
+    @API("diary_delete", description="删除指定文件的日记", version="1")
+    async def api_diary_delete(self, filename: str) -> Dict[str, Any]:
+        storage = self._storage
+        if storage is None:
+            raise ValueError("日记插件未就绪")
+        if not filename:
+            raise ValueError("缺少要删除的日记文件名")
+        deleted = await storage.delete_diary(filename)
+        if not deleted:
+            raise ValueError("删除失败：日记不存在或文件名非法")
+        return {"deleted": True, "filename": filename}
+
+    async def _run_webui_generation(self, date: str) -> None:
+        """在后台生成日记，避免 WebUI 的 10 秒调用超时。"""
+        try:
+            # 复用命令逻辑：全局范围、忽略黑白名单，stream_id 为空时不会向聊天发送消息。
+            success, result, _ = await self._cmd_generate(date, "", "")
+            if success:
+                self._update_generation_state(success=True, message=f"{date} 的日记生成成功")
+            else:
+                self._update_generation_state(success=False, message=f"{date} 的日记生成失败: {result}")
+        except asyncio.CancelledError:
+            self._update_generation_state(success=False, message=f"{date} 的日记生成已取消")
+            raise
+        except Exception as exc:
+            self.ctx.logger.error("WebUI 立即生成日记失败: %s", exc, exc_info=True)
+            self._update_generation_state(success=False, message=f"生成失败: {exc}")
+        finally:
+            self._generation_state["finished_at"] = time.time()
+            self._generation_state["running"] = False
+
+    # ===== 定时任务完成后发送到私聊 =====
+
+    async def _send_scheduled_diary_to_private(self, date: str, content: str) -> None:
+        """定时日记生成后，按配置把内容发送到指定平台的私聊。"""
+        cfg = self.config.schedule
+        if not cfg.send_to_private or not content:
+            return
+
+        target = (cfg.private_target or "").strip()
+        if not target:
+            self.ctx.logger.warning("已开启发送到私聊，但 schedule.private_target 为空，跳过发送")
+            return
+
+        try:
+            platform, account = parse_private_target(target)
+        except ValueError as exc:
+            self.ctx.logger.warning("私聊目标配置无效: %s", exc)
+            return
+
+        resolver = self._chat_resolver
+        if resolver is None:
+            self.ctx.logger.warning("chat_resolver 未就绪，无法发送定时日记到私聊")
+            return
+
+        try:
+            stream_id = await resolver.resolve_private_stream(platform, account)
+        except Exception as exc:
+            self.ctx.logger.error("解析私聊目标 %s 失败: %s", target, exc, exc_info=True)
+            return
+        if not stream_id:
+            self.ctx.logger.warning("未找到或无法创建私聊目标 %s，跳过发送", target)
+            return
+
+        message = f"📔 {date} 的日记\n\n{content}"
+        try:
+            result = await self.ctx.send.text(message, stream_id)
+        except Exception as exc:
+            self.ctx.logger.error("发送定时日记到私聊 %s 失败: %s", target, exc, exc_info=True)
+            return
+
+        if isinstance(result, dict):
+            sent = bool(result.get("sent"))
+        else:
+            sent = bool(result)
+        if sent:
+            self.ctx.logger.info("定时日记 %s 已发送到私聊 %s", date, target)
+        else:
+            self.ctx.logger.warning("发送定时日记到私聊 %s 失败", target)
 
     # ===== @Tool emotion_analysis =====
 
@@ -326,26 +535,40 @@ class DiaryPlugin(MaiBotPlugin):
         if stream_id:
             await self.ctx.send.text(f"我正在写 {date} 的日记...", stream_id)
 
+        pipeline = self._pipeline
+        if pipeline is None:
+            if stream_id:
+                await self.ctx.send.text("⚠️ 日记插件未就绪", stream_id)
+            return False, "pipeline 未就绪", True
+
         # generate 命令忽略黑白名单。如果在群聊中执行,只取当前会话的消息;否则全局
         messages = await self._fetch_command_messages(date, stream_id, group_id)
 
-        success, result = await self._pipeline.generate_from_messages(date, messages, force_50k=True)
+        success, result = await pipeline.generate_from_messages(date, messages, force_50k=True)
         if not success:
             if stream_id:
                 await self.ctx.send.text(f"❌ 生成失败: {result}", stream_id)
             return False, result, True
 
+        publish_enabled = pipeline.qzone_publish_enabled
         if stream_id:
-            await self.ctx.send.text(f"日记生成成功！正在发布到 QQ 空间\n{date}:\n{result}", stream_id)
-        publish_ok = await self._pipeline.publish_to_qzone(date, result)
-        if stream_id:
-            if publish_ok:
-                await self.ctx.send.text("已成功发布到 QQ 空间！", stream_id)
-            else:
+            if publish_enabled:
                 await self.ctx.send.text(
-                    "⚠️ QQ 空间发布失败,可能原因:\n1. Napcat 服务未启动\n2. 端口配置错误\n3. QQ 空间权限问题",
-                    stream_id,
+                    f"日记生成成功！正在发布到 QQ 空间\n{date}:\n{result}", stream_id
                 )
+            else:
+                await self.ctx.send.text(f"日记生成成功！\n{date}:\n{result}", stream_id)
+
+        if publish_enabled:
+            publish_ok = await pipeline.publish_to_qzone(date, result)
+            if stream_id:
+                if publish_ok:
+                    await self.ctx.send.text("已成功发布到 QQ 空间！", stream_id)
+                else:
+                    await self.ctx.send.text(
+                        "⚠️ QQ 空间发布失败,可能原因:\n1. Napcat 服务未启动\n2. 端口配置错误\n3. QQ 空间权限问题",
+                        stream_id,
+                    )
         return True, result, True
 
     async def _cmd_view(self, param: str, stream_id: str) -> tuple:
@@ -369,7 +592,7 @@ class DiaryPlugin(MaiBotPlugin):
             if 0 <= idx < len(diaries):
                 d = diaries[idx]
                 gt = datetime.datetime.fromtimestamp(d.get("generation_time", 0))
-                status = "✅已发布" if d.get("is_published_qzone") else "❌未发布"
+                status = "✅已发布" if d.get("is_published_qzone") else "⚪未发布"
                 if stream_id:
                     await self.ctx.send.text(
                         f"📖 {date} 日记 {idx+1} ({gt.strftime('%H:%M')}) | "
@@ -384,7 +607,7 @@ class DiaryPlugin(MaiBotPlugin):
         lines = []
         for i, d in enumerate(diaries, 1):
             gt = datetime.datetime.fromtimestamp(d.get("generation_time", 0))
-            status = "✅已发布" if d.get("is_published_qzone") else "❌未发布"
+            status = "✅已发布" if d.get("is_published_qzone") else "⚪未发布"
             lines.append(f"{i}. {gt.strftime('%H:%M')} | {d.get('word_count', 0)}字 | {status}")
         if stream_id:
             await self.ctx.send.text(
@@ -403,8 +626,8 @@ class DiaryPlugin(MaiBotPlugin):
                     await self.ctx.send.text("📭 还没有任何日记记录", stream_id)
                 return True, "空", True
             success_count = sum(1 for d in diaries if d.get("is_published_qzone"))
-            failed_count = len(diaries) - success_count
-            success_rate = success_count / len(diaries) * 100 if diaries else 0
+            unpublished_count = len(diaries) - success_count
+            publish_rate = success_count / len(diaries) * 100 if diaries else 0
             dates = sorted({d.get("date", "") for d in diaries if d.get("date")})
             date_range = f"{dates[0]} ~ {dates[-1]}" if len(dates) > 1 else (dates[0] if dates else "无")
             if stream_id:
@@ -412,7 +635,7 @@ class DiaryPlugin(MaiBotPlugin):
                     f"📚 日记详细统计:\n📖 总日记数: {stats['total_count']}篇\n"
                     f"📝 总字数: {stats['total_words']}字 (平均 {stats['avg_words']}字/篇)\n"
                     f"📅 日期范围: {date_range}\n"
-                    f"📱 发布: {success_count} 成功 / {failed_count} 失败 ({success_rate:.1f}%)",
+                    f"📱 发布: {success_count} 已发布 / {unpublished_count} 未发布 ({publish_rate:.1f}%)",
                     stream_id,
                 )
             return True, "统计完成", True
@@ -434,7 +657,7 @@ class DiaryPlugin(MaiBotPlugin):
             lines = []
             for i, d in enumerate(diaries, 1):
                 gt = datetime.datetime.fromtimestamp(d.get("generation_time", 0))
-                status = "✅已发布" if d.get("is_published_qzone") else "❌未发布"
+                status = "✅已发布" if d.get("is_published_qzone") else "⚪未发布"
                 lines.append(f"{i}. {gt.strftime('%H:%M')} ({d.get('word_count', 0)}字) {status}")
             if stream_id:
                 await self.ctx.send.text(
@@ -454,7 +677,7 @@ class DiaryPlugin(MaiBotPlugin):
             return True, "空", True
         lines = []
         for d in recent:
-            status = "✅已发布" if d.get("is_published_qzone") else "❌未发布"
+            status = "✅已发布" if d.get("is_published_qzone") else "⚪未发布"
             lines.append(f"📅 {d.get('date', '')} ({d.get('word_count', 0)}字) {status}")
         if stream_id:
             await self.ctx.send.text(
@@ -529,6 +752,7 @@ class DiaryPlugin(MaiBotPlugin):
             "/diary generate [日期] - 生成日记\n"
             "/diary list [日期|all] - 日记列表/统计\n"
             "/diary debug [日期] - 调试信息\n\n"
+            "💡 WebUI 侧栏的“日记管理”页面可查看、删除日记并立即生成。\n\n"
             "📅 日期格式: YYYY-MM-DD / YYYY/MM/DD / YYYY.MM.DD"
         )
         if stream_id:

@@ -12,7 +12,7 @@
 - DiaryPipeline:         主流程 orchestrator
 """
 
-from .chat_resolver import ChatResolver, parse_target_config, resolve_filter_strategy
+from .chat_resolver import ChatResolver, parse_private_target, parse_target_config, resolve_filter_strategy
 from .diary_pipeline import DiaryPipeline
 from .llm_runner import LLMCallError, LLMRunner
 from .message_fetcher import MessageFetcher
@@ -33,6 +33,7 @@ __all__ = [
     "build_custom_prompt",
     "build_diary_prompt",
     "build_qqzone_prompt",
+    "parse_private_target",
     "parse_target_config",
     "resolve_filter_strategy",
     "weather_by_emotion",

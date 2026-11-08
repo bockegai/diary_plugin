@@ -23,8 +23,8 @@ class PluginSection(PluginConfigBase):
     __ui_order__ = 0
 
     name: str = Field(default="diary_plugin", description="插件名称")
-    version: str = Field(default="3.0.0", description="插件版本")
-    config_version: str = Field(default="3.0.0", description="配置版本(Runner 用于兼容性校验)")
+    version: str = Field(default="3.1.0", description="插件版本")
+    config_version: str = Field(default="3.1.0", description="配置版本(Runner 用于兼容性校验)")
     enabled: bool = Field(default=True, description="是否启用插件")
     admin_qqs: list[int] = Field(
         default_factory=list,
@@ -76,6 +76,11 @@ class QzonePublishingSection(PluginConfigBase):
     __ui_icon__ = "share-2"
     __ui_order__ = 2
 
+    enabled: bool = Field(
+        default=True,
+        description="是否把生成的日记发布到 QQ 空间。关闭后不再发布，也不会再提示发布失败。",
+        json_schema_extra={"label": "发布到 QQ 空间", "order": 0},
+    )
     qzone_min_word_count: int = Field(default=150, ge=20, le=8000, description="最小字数,范围 20-8000")
     qzone_max_word_count: int = Field(default=350, ge=20, le=8000, description="最大字数,范围 20-8000,必须 ≥ 最小值")
     napcat_host: str = Field(default="127.0.0.1", description="Napcat 服务地址,Docker 环境可使用 'napcat'")
@@ -154,6 +159,23 @@ class ScheduleSection(PluginConfigBase):
             '目标列表,格式: ["group:群号", "private:用户qq号"]。'
             "白名单模式空列表=禁用定时任务;黑名单模式空列表=处理全部聊天。"
         ),
+    )
+    send_to_private: bool = Field(
+        default=False,
+        description="定时任务生成日记后,是否把日记发送到下方指定的私聊。",
+        json_schema_extra={"label": "发送到指定私聊", "order": 10},
+    )
+    private_target: str = Field(
+        default="",
+        description="私聊发送目标,格式: 平台:qq号,例如 qq:111111。",
+        json_schema_extra={
+            "label": "私聊目标",
+            "placeholder": "qq:111111",
+            "hint": "平台填写适配器标识(通常是 qq),冒号后填写目标 QQ 号。",
+            "order": 11,
+            "depends_on": "send_to_private",
+            "depends_value": True,
+        },
     )
 
 

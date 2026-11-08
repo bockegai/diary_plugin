@@ -10,8 +10,9 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
-from typing import TYPE_CHECKING, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, List, Optional, Tuple
 
 from ._envelope import peel_envelope
 
@@ -19,6 +20,29 @@ if TYPE_CHECKING:
     from maibot_sdk import PluginContext
 
 logger = logging.getLogger(__name__)
+
+_PRIVATE_TARGET_PLATFORM_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]{0,31}$")
+_PRIVATE_TARGET_ACCOUNT_RE = re.compile(r"^[^\s:]{1,128}$")
+
+
+def parse_private_target(raw: str) -> Tuple[str, str]:
+    """解析 ``平台:qq号``（如 ``qq:111111``）为 ``(platform, account)``。
+
+    同时兼容全角冒号。格式非法时抛 ``ValueError``。
+    """
+    value = str(raw or "").strip().replace("：", ":", 1)
+    if not value:
+        raise ValueError("私聊目标为空")
+    platform, separator, account = value.partition(":")
+    platform = platform.strip().lower()
+    account = account.strip()
+    if not separator or not platform or not account:
+        raise ValueError("私聊目标格式应为 平台:qq号，例如 qq:111111")
+    if not _PRIVATE_TARGET_PLATFORM_RE.match(platform):
+        raise ValueError(f"私聊目标的平台标识不合法: {platform}")
+    if not _PRIVATE_TARGET_ACCOUNT_RE.match(account):
+        raise ValueError("私聊目标的账号不能包含空白或冒号")
+    return platform, account
 
 
 def parse_target_config(target_chats: List[str]) -> Tuple[List[str], List[str]]:
@@ -95,6 +119,22 @@ class ChatResolver:
         except Exception as exc:
             logger.error("保存缓存失败: %s", exc, exc_info=True)
 
+    @staticmethod
+    def _extract_session_id(result: Any) -> Optional[str]:
+        """从 host 返回值里取 session_id，兼容 stream 包装和直接字段。"""
+        result = peel_envelope(result)
+        if not isinstance(result, dict):
+            return None
+        if result.get("success") is False:
+            return None
+        # 直接 stream 形式或 {success, stream} 形式
+        stream = result.get("stream", result if "session_id" in result else None)
+        if not stream:
+            return None
+        if isinstance(stream, dict):
+            return stream.get("session_id") or stream.get("stream_id")
+        return getattr(stream, "session_id", None) or getattr(stream, "stream_id", None)
+
     async def _query_session_id(self, qq: str, is_group: bool) -> Optional[str]:
         """调 ``ctx.chat.get_stream_by_*`` 取 session_id。
 
@@ -111,16 +151,52 @@ class ChatResolver:
             logger.error("ctx.chat 查询失败 (qq=%s, group=%s): %s", qq, is_group, exc)
             return None
 
-        result = peel_envelope(result)
-        if not isinstance(result, dict):
+        return self._extract_session_id(result)
+
+    async def resolve_private_stream(self, platform: str, account: str) -> Optional[str]:
+        """把 ``平台:账号`` 解析成私聊 session_id。
+
+        优先复用已存在的聊天流；旧版 host 没有 ``chat.open_session`` 时
+        只返回已存在的流，不会创建新会话。
+        """
+        platform = str(platform or "qq").strip().lower() or "qq"
+        account = str(account or "").strip()
+        if not account:
             return None
-        # 直接 stream 形式或 {success, stream} 形式
-        stream = result.get("stream", result if "session_id" in result else None)
-        if not stream:
+
+        try:
+            try:
+                result = await self._ctx.chat.get_stream_by_user_id(account, platform=platform)
+            except TypeError:
+                # 旧版 SDK 的 get_stream_by_user_id 没有 platform 参数。
+                result = await self._ctx.chat.get_stream_by_user_id(account)
+        except Exception as exc:
+            logger.warning("查询私聊流失败 (platform=%s, account=%s): %s", platform, account, exc)
+            result = None
+
+        session_id = self._extract_session_id(result)
+        if session_id:
+            return session_id
+
+        open_session = getattr(self._ctx.chat, "open_session", None)
+        if open_session is None:
+            logger.warning(
+                "未找到私聊 %s:%s 的聊天流，且当前 host 不支持 chat.open_session，无法主动创建",
+                platform,
+                account,
+            )
             return None
-        if isinstance(stream, dict):
-            return stream.get("session_id") or stream.get("stream_id")
-        return getattr(stream, "session_id", None) or getattr(stream, "stream_id", None)
+
+        try:
+            result = await open_session(platform=platform, chat_type="private", user_id=account)
+        except Exception as exc:
+            logger.error("创建私聊流失败 (platform=%s, account=%s): %s", platform, account, exc)
+            return None
+
+        session_id = self._extract_session_id(result)
+        if not session_id:
+            logger.warning("创建私聊流后仍未取得 session_id (platform=%s, account=%s)", platform, account)
+        return session_id
 
     async def resolve_to_session_ids(self, target_chats: List[str]) -> List[str]:
         """配置列表 → session_id 列表(去重 + 缓存)。"""
